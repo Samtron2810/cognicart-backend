@@ -12,8 +12,10 @@ const authService = require('../services/auth/authService');
  */
 async function register(req, res, next) {
   try {
-    const { businessName, email, password, phone, role } = req.body;
-    const result = await authService.register({ businessName, email, password, phone, role });
+    // NOTE: `role` is deliberately ignored - self-service signup always creates
+    // a 'seller'. Privileged accounts are provisioned with `npm run create-admin`.
+    const { businessName, email, password, phone } = req.body;
+    const result = await authService.register({ businessName, email, password, phone });
 
     // Set secure cookie
     res.cookie('token', result.token, {

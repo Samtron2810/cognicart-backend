@@ -1,320 +1,274 @@
 /**
- * WhatsApp Marketing Campaigns and Customer Re-engagement Service
- * Powers audience segmentation, template variable interpolation, bulk broadcast dispatch, and abandoned order recovery
+ * Campaign Service
+ * Telegram broadcasts to customers who have initiated a seller's bot.
  */
 
+const mongoose = require('mongoose');
 const Campaign = require('../../models/Campaign');
-const Order = require('../../models/Order');
-const { isDbConnected } = require('../../config/db');
-const customerService = require('../customers/customerService');
+const Customer = require('../../models/Customer');
+const telegramService = require('../telegram/telegramService');
 const orderService = require('../orders/orderService');
 const businessService = require('../sellers/businessService');
+const { sanitize } = require('../../utils/validators');
 const logger = require('../../utils/logger');
 
-// In-Memory store for campaigns when MongoDB is offline
-const memoryCampaigns = new Map();
-
-function getWhatsAppService() {
-  return require('../whatsapp/whatsappService');
+function wait(ms) {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
-function interpolateMessage(template, customer, business) {
-  let msg = template || '';
-  const customerName = (customer && customer.name) || 'Valued Customer';
-  const businessName = (business && business.name) || 'Our Store';
+function segmentQuery(sellerId, segment) {
+  const query = { sellerId, marketingOptOut: false };
+  const now = new Date();
+  if (segment === 'VIP') {
+    query.$or = [{ totalOrders: { $gte: 2 } }, { totalSpent: { $gte: 30000 } }];
+  }
+  if (segment === 'INACTIVE') {
+    query.$or = [
+      { lastOrderAt: null },
+      { lastOrderAt: { $lt: new Date(now.getTime() - 30 * 86400000) } },
+    ];
+  }
+  if (segment === 'NEW') query.createdAt = { $gte: new Date(now.getTime() - 7 * 86400000) };
+  return query;
+}
 
-  msg = msg.replace(/{{name}}/gi, customerName);
-  msg = msg.replace(/{{customer_name}}/gi, customerName);
-  msg = msg.replace(/{{store}}/gi, businessName);
-  msg = msg.replace(/{{business_name}}/gi, businessName);
+function interpolateMessage(template, recipient, business) {
+  const name = recipient.name || 'Valued Customer';
+  const store = business.name || 'Our Store';
+  return String(template || '')
+    .replace(/{{name}}|{{customer_name}}/gi, name)
+    .replace(/{{store}}|{{business_name}}/gi, store);
+}
 
-  return msg;
+function telegramIdentity(customer) {
+  return (customer.identities || []).find(
+    (identity) => identity.channel === 'telegram' && identity.externalId
+  );
+}
+
+async function resolveTelegramRecipients(sellerId, segment, customCustomerIds = []) {
+  const query = segmentQuery(sellerId, segment);
+  query.identities = { $elemMatch: { channel: 'telegram', externalId: { $ne: '' } } };
+  if (segment === 'CUSTOM') {
+    if (!customCustomerIds.length) return [];
+    query._id = { $in: customCustomerIds };
+  }
+
+  const customers = await Customer.find(query);
+  const unique = new Map();
+  for (const customer of customers) {
+    const identity = telegramIdentity(customer);
+    if (!identity || unique.has(identity.externalId)) continue;
+    unique.set(identity.externalId, {
+      customerId: customer._id.toString(),
+      channel: 'telegram',
+      channelUserId: String(identity.externalId),
+      handle: identity.handle || '',
+      phone: customer.phone || '',
+      name: customer.name || identity.displayName || '',
+      status: 'pending',
+    });
+  }
+  return [...unique.values()];
 }
 
 const campaignService = {
-  /**
-   * Filter and aggregate customers by segmentation criteria
-   */
-  async getSegmentCustomers(sellerId, segment = 'ALL') {
+  async create(sellerId, payload = {}) {
     if (!sellerId) throw new Error('Seller ID is required');
-
-    const allCustomers = await customerService.list(sellerId);
-    // Strict compliance: Filter out customers who opted out of marketing
-    const optedIn = allCustomers.filter((c) => !c.marketingOptOut);
-
-    const now = Date.now();
-    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-
-    switch (segment.toUpperCase()) {
-      case 'VIP':
-        return optedIn.filter((c) => (c.totalOrders || 0) >= 2 || (c.totalSpent || 0) >= 30000);
-
-      case 'INACTIVE':
-        return optedIn.filter((c) => {
-          if (!c.lastOrderAt) return true;
-          const orderAge = now - new Date(c.lastOrderAt).getTime();
-          return orderAge >= THIRTY_DAYS_MS;
-        });
-
-      case 'NEW':
-        return optedIn.filter((c) => {
-          const createdTime = new Date(c.createdAt || c.lastOrderAt || now).getTime();
-          return now - createdTime <= SEVEN_DAYS_MS;
-        });
-
-      case 'ALL':
-      default:
-        return optedIn;
+    if (!String(payload.title || '').trim()) {
+      const error = new Error('Campaign title is required');
+      error.statusCode = 400;
+      throw error;
     }
-  },
-
-  /**
-   * Create a new marketing broadcast campaign
-   */
-  async create(sellerId, payload) {
-    if (!sellerId) throw new Error('Seller ID is required');
-
-    if (!payload.title || !payload.title.trim()) {
-      const err = new Error('Campaign title is required');
+    if (!String(payload.message || '').trim()) {
+      const error = new Error('Campaign message content is required');
+      error.statusCode = 400;
+      throw error;
+    }
+    const channel = String(payload.channel || 'telegram').toLowerCase();
+    if (channel !== 'telegram') {
+      const err = new Error('Campaign channel must be telegram');
       err.statusCode = 400;
       throw err;
     }
 
-    if (!payload.message || !payload.message.trim()) {
-      const err = new Error('Campaign message content is required');
-      err.statusCode = 400;
-      throw err;
+    const segment = String(payload.segment || 'ALL').toUpperCase();
+    if (!['ALL', 'VIP', 'INACTIVE', 'NEW', 'CUSTOM'].includes(segment)) {
+      const error = new Error('Invalid campaign segment');
+      error.statusCode = 400;
+      throw error;
     }
+    const customIds = payload.customerIds || payload.customCustomerIds || [];
+    const recipients = await resolveTelegramRecipients(sellerId, segment, customIds);
 
-    const segment = (payload.segment || 'ALL').toUpperCase();
-    const targetCustomers = await this.getSegmentCustomers(sellerId, segment);
-
-    const campaignData = {
+    const campaign = await Campaign.create({
       sellerId,
-      title: payload.title.trim(),
-      message: payload.message.trim(),
+      title: sanitize(payload.title, 150),
+      message: sanitize(payload.message, 2000),
+      channel,
       segment,
-      status: 'draft',
-      stats: {
-        totalRecipients: targetCustomers.length,
-        sentCount: 0,
-        failedCount: 0,
-      },
-      recipients: targetCustomers.map((c) => ({
-        customerId: c.id,
-        phone: c.phone,
-        name: c.name,
-        status: 'pending',
-      })),
+      status: payload.scheduledAt ? 'scheduled' : 'draft',
+      scheduledAt: payload.scheduledAt || null,
+      recipients,
+      stats: { totalRecipients: recipients.length, sentCount: 0, failedCount: 0 },
       metadata: payload.metadata || {},
-    };
-
-    if (isDbConnected()) {
-      const campaign = await Campaign.create(campaignData);
-      logger.info('Campaign created (DB):', { id: campaign._id.toString(), sellerId, segment });
-      return campaign.toJSON();
-    }
-
-    const id = 'cmp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const now = new Date().toISOString();
-    const memCampaign = {
-      id,
-      _id: id,
-      ...campaignData,
-      createdAt: now,
-      updatedAt: now,
-    };
-    memoryCampaigns.set(id, memCampaign);
-    logger.info('Campaign created (Memory):', { id, sellerId, segment });
-    return memCampaign;
+    });
+    return campaign.toJSON();
   },
 
-  /**
-   * List campaigns for a seller
-   */
-  async list(sellerId) {
-    if (!sellerId) throw new Error('Seller ID is required');
-
-    if (isDbConnected()) {
-      const campaigns = await Campaign.find({ sellerId }).sort({ createdAt: -1 });
-      return campaigns.map((c) => c.toJSON());
-    }
-
-    const list = Array.from(memoryCampaigns.values()).filter((c) => c.sellerId === sellerId);
-    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  async list(sellerId, filters = {}) {
+    const query = { sellerId };
+    if (filters.status) query.status = filters.status;
+    if (filters.segment) query.segment = filters.segment;
+    if (filters.channel) query.channel = filters.channel;
+    const campaigns = await Campaign.find(query).sort({ createdAt: -1 });
+    return campaigns.map((campaign) => campaign.toJSON());
   },
 
-  /**
-   * Get single campaign by ID
-   */
   async getById(id, sellerId) {
-    if (isDbConnected()) {
-      const campaign = await Campaign.findOne({ _id: id, sellerId });
-      if (!campaign) {
-        const err = new Error('Campaign not found');
-        err.statusCode = 404;
-        throw err;
-      }
-      return campaign.toJSON();
+    if (!id || !mongoose.isValidObjectId(id)) {
+      const error = new Error('Campaign not found');
+      error.statusCode = 404;
+      throw error;
     }
-
-    const campaign = memoryCampaigns.get(id);
-    if (!campaign || campaign.sellerId !== sellerId) {
-      const err = new Error('Campaign not found');
-      err.statusCode = 404;
-      throw err;
+    const campaign = await Campaign.findOne({ _id: id, sellerId });
+    if (!campaign) {
+      const error = new Error('Campaign not found');
+      error.statusCode = 404;
+      throw error;
     }
-    return campaign;
+    return campaign.toJSON();
   },
 
-  /**
-   * Execute and broadcast marketing campaign to target segment
-   */
-  async sendCampaign(sellerId, campaignId) {
-    const campaign = await this.getById(campaignId, sellerId);
-    const business = await businessService.getBySellerId(sellerId);
-    const targetCustomers = await this.getSegmentCustomers(sellerId, campaign.segment);
+  async getSegmentCustomers(sellerId, segment = 'ALL') {
+    const query = segmentQuery(sellerId, String(segment).toUpperCase());
+    query.identities = { $elemMatch: { channel: 'telegram', externalId: { $ne: '' } } };
+    const customers = await Customer.find(query).sort({ createdAt: -1 });
+    return customers.map((customer) => customer.toJSON());
+  },
 
-    const whatsappService = getWhatsAppService();
-    let sentCount = 0;
-    let failedCount = 0;
-    const now = new Date();
-
-    const updatedRecipients = [];
-
-    for (const customer of targetCustomers) {
-      const personalizedBody = interpolateMessage(campaign.message, customer, business);
-      try {
-        await whatsappService.sendOutbound({
-          sellerId,
-          to: customer.phone,
-          body: personalizedBody,
-        });
-
-        sentCount++;
-        updatedRecipients.push({
-          customerId: customer.id,
-          phone: customer.phone,
-          name: customer.name,
-          status: 'sent',
-          sentAt: now,
-        });
-      } catch (err) {
-        failedCount++;
-        updatedRecipients.push({
-          customerId: customer.id,
-          phone: customer.phone,
-          name: customer.name,
-          status: 'failed',
-          error: err.message,
-        });
-      }
+  async sendCampaign(sellerId, id) {
+    await this.getById(id, sellerId);
+    const campaign = await Campaign.findOne({ _id: id, sellerId });
+    if (campaign.status === 'sending' || campaign.status === 'completed') {
+      const error = new Error('Campaign has already been sent');
+      error.statusCode = 409;
+      throw error;
     }
-
-    const finalStatus = sentCount > 0 ? 'completed' : 'failed';
-    const stats = {
-      totalRecipients: targetCustomers.length,
-      sentCount,
-      failedCount,
-    };
-
-    if (isDbConnected()) {
-      const updated = await Campaign.findByIdAndUpdate(
-        campaignId,
-        {
-          $set: {
-            status: finalStatus,
-            sentAt: now,
-            stats,
-            recipients: updatedRecipients,
-          },
-        },
-        { new: true }
+    if (!campaign.recipients.length) {
+      campaign.status = 'failed';
+      await campaign.save();
+      const error = new Error(
+        campaign.channel === 'telegram'
+          ? 'No eligible Telegram recipients have started this bot or all have opted out'
+          : 'No eligible campaign recipients'
       );
-      logger.info('Campaign sent (DB):', { campaignId, sentCount, failedCount });
-      return updated.toJSON();
+      error.statusCode = 400;
+      throw error;
     }
 
-    campaign.status = finalStatus;
-    campaign.sentAt = now.toISOString();
-    campaign.stats = stats;
-    campaign.recipients = updatedRecipients;
-    campaign.updatedAt = now.toISOString();
+    campaign.status = 'sending';
+    campaign.stats.sentCount = 0;
+    campaign.stats.failedCount = 0;
+    await campaign.save();
 
-    memoryCampaigns.set(campaignId, campaign);
-    logger.info('Campaign sent (Memory):', { campaignId, sentCount, failedCount });
-    return campaign;
+    const configuredDelay = process.env.TELEGRAM_BROADCAST_DELAY_MS;
+    const delayMs = configuredDelay === undefined ? 40 : Math.max(Number(configuredDelay) || 0, 0);
+    const business = (await businessService.getBySellerId(sellerId)) || {};
+
+    for (const recipient of campaign.recipients) {
+      try {
+        const personalizedMessage = interpolateMessage(campaign.message, recipient, business);
+        await telegramService.sendOutbound({
+          sellerId,
+          to: recipient.channelUserId,
+          body: personalizedMessage,
+          customerPhone: recipient.phone,
+          channelUsername: recipient.handle,
+          customerName: recipient.name,
+          deterministic: true,
+        });
+        await wait(delayMs); // ~25 messages/sec by default, below Telegram's global limit.
+        recipient.status = 'sent';
+        recipient.sentAt = new Date();
+        recipient.error = '';
+        campaign.stats.sentCount += 1;
+      } catch (error) {
+        recipient.status = 'failed';
+        recipient.error = sanitize(error.message, 300);
+        campaign.stats.failedCount += 1;
+        logger.warn('Campaign recipient delivery failed:', {
+          campaignId: campaign.id,
+          sellerId,
+          channel: campaign.channel,
+          recipient: recipient.channelUserId || recipient.phone,
+          error: error.message,
+        });
+      }
+      await campaign.save();
+    }
+
+    campaign.status = campaign.stats.sentCount > 0 ? 'completed' : 'failed';
+    campaign.sentAt = new Date();
+    await campaign.save();
+    return campaign.toJSON();
   },
 
-  /**
-   * Automated Abandoned Order Recovery Engine
-   * Finds unpaid pending orders and sends automated payment reminders with direct checkout links
-   */
   async triggerAbandonedOrderReminders(sellerId, { ageMinutes = 0 } = {}) {
     if (!sellerId) throw new Error('Seller ID is required');
-
-    const orders = await orderService.list(sellerId, { paymentStatus: 'Pending', status: 'Pending' });
-    const business = await businessService.getBySellerId(sellerId);
-    const storeName = (business && business.name) || 'Our Store';
-    const whatsappService = getWhatsAppService();
-
-    const now = Date.now();
-    const thresholdMs = Number(ageMinutes) * 60 * 1000;
-    const remindersSent = [];
+    const orders = await orderService.list(sellerId, {
+      paymentStatus: 'Pending',
+      status: 'Pending',
+      source: 'telegram',
+    });
+    const business = (await businessService.getBySellerId(sellerId)) || {};
+    const thresholdMs = Math.max(Number(ageMinutes) || 0, 0) * 60000;
+    const reminders = [];
 
     for (const order of orders) {
-      const orderTime = new Date(order.createdAt).getTime();
-      if (now - orderTime < thresholdMs) continue;
+      if (!order.channelUserId || Date.now() - new Date(order.createdAt).getTime() < thresholdMs) continue;
+      const customer = await Customer.findOne({
+        sellerId,
+        identities: {
+          $elemMatch: { channel: 'telegram', externalId: String(order.channelUserId) },
+        },
+      });
+      if (!customer || customer.marketingOptOut) continue;
 
-      // Check if customer opted out
-      const customer = await customerService.findByPhone(order.customerPhone, sellerId);
-      if (customer && customer.marketingOptOut) continue;
-
-      const checkoutUrl = `${process.env.CLIENT_URL || 'https://checkout.paystack.com'}/pay?orderId=${order.id}`;
-
-      const messageBody = [
-        `⏰ *Incomplete Order Reminder*`,
-        `Hello ${order.customerName || 'there'}, we noticed you left some items in your cart at *${storeName}*!`,
-        ``,
-        `*Order Reference:* #${order.id}`,
-        `*Amount:* ₦${(order.total || 0).toLocaleString()}`,
-        ``,
-        `Your items are reserved for a limited time. You can complete your order securely here:`,
-        `${checkoutUrl}`,
-        ``,
-        `If you need any assistance, reply directly to this message!`,
-      ].join('\n');
+      const orderUrl = `${String(process.env.CLIENT_URL || '').replace(/\/$/, '')}/orders/${order.id}`;
+      const body = [
+        'Incomplete order reminder',
+        `Hello ${order.customerName || 'there'}, your order with ${business.name || 'our store'} is still awaiting payment.`,
+        `Reference: ${order.reference || order.id}`,
+        `Amount: ₦${Number(order.total || 0).toLocaleString('en-NG')}`,
+        orderUrl.startsWith('http') ? `Continue securely: ${orderUrl}` : '',
+        'Reply here if you need help.',
+      ].filter(Boolean).join('\n');
 
       try {
-        await whatsappService.sendOutbound({
+        await telegramService.sendOutbound({
           sellerId,
-          to: order.customerPhone,
-          body: messageBody,
-        });
-
-        remindersSent.push({
-          orderId: order.id,
+          to: order.channelUserId,
+          body,
           customerPhone: order.customerPhone,
-          amount: order.total,
-          sentAt: new Date().toISOString(),
+          channelUsername: order.channelUsername,
+          customerName: order.customerName,
+          deterministic: true,
         });
-      } catch (err) {
-        logger.warn('Failed to send abandoned order reminder:', { orderId: order.id, error: err.message });
+        reminders.push({ orderId: order.id, channelUserId: order.channelUserId, sentAt: new Date().toISOString() });
+      } catch (error) {
+        logger.warn('Telegram abandoned-order reminder failed:', {
+          sellerId,
+          orderId: order.id,
+          error: error.message,
+        });
       }
     }
 
-    logger.info('Abandoned order reminders triggered:', { sellerId, count: remindersSent.length });
-    return {
-      success: true,
-      remindersSentCount: remindersSent.length,
-      reminders: remindersSent,
-    };
+    return { success: true, remindersSentCount: reminders.length, reminders };
   },
 
-  getMemoryStore() {
-    return memoryCampaigns;
-  },
+  resolveTelegramRecipients,
 };
 
 module.exports = campaignService;

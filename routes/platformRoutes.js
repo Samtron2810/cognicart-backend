@@ -29,7 +29,7 @@ router.get('/customers', adminController.listAllCustomers);
 router.get('/revenue', adminController.getRevenueBreakdown);
 router.get('/payouts', adminController.listPayouts);
 router.patch('/payouts/:id/process', adminController.processPayout);
-router.get('/whatsapp', adminController.getWhatsAppStats);
+router.get('/telegram', adminController.getTelegramStats);
 router.get('/fee', adminController.getFeeConfig);
 router.patch('/fee', adminController.updateFeeConfig);
 

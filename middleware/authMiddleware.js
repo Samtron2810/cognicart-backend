@@ -3,7 +3,7 @@
  * Enforces JWT verification, seller tenant context injection, and role-based access control
  */
 
-const { verifyToken } = require('../utils/generateToken');
+const { verifyToken, getTokenType, TOKEN_TYPES } = require('../utils/generateToken');
 const authService = require('../services/auth/authService');
 const logger = require('../utils/logger');
 
@@ -28,6 +28,15 @@ async function protect(req, res, next) {
 
   try {
     const decoded = verifyToken(token);
+
+    // A buyer session must never be accepted as a seller/staff session
+    if (getTokenType(decoded) === TOKEN_TYPES.SHOPPER) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authorized: buyer sessions cannot access seller endpoints',
+      });
+    }
+
     const user = await authService.findUserById(decoded.id);
 
     if (!user) {
@@ -75,6 +84,8 @@ async function optionalAuth(req, res, next) {
 
   try {
     const decoded = verifyToken(token);
+    if (getTokenType(decoded) === TOKEN_TYPES.SHOPPER) return next();
+
     const user = await authService.findUserById(decoded.id);
     if (user && user.isActive !== false) {
       req.user = user;

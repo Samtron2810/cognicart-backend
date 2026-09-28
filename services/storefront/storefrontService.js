@@ -4,12 +4,7 @@
  */
 
 const Business = require('../../models/Business');
-const Product = require('../../models/Product');
-const { isDbConnected } = require('../../config/db');
-const businessService = require('../sellers/businessService');
 const productService = require('../products/productService');
-const authService = require('../auth/authService');
-const logger = require('../../utils/logger');
 
 function slugify(text) {
   if (!text) return '';
@@ -37,44 +32,14 @@ const storefrontService = {
 
     const cleanId = identifier.trim();
 
-    if (isDbConnected()) {
-      let biz = await Business.findOne({
-        $or: [{ sellerId: cleanId }, { slug: cleanId.toLowerCase() }],
-      });
-
-      if (!biz) {
-        // Fallback matching slug of name
-        const allBiz = await Business.find();
-        biz = allBiz.find((b) => slugify(b.name) === cleanId.toLowerCase());
-      }
-
-      if (!biz) {
-        const err = new Error('Storefront not found');
-        err.statusCode = 404;
-        throw err;
-      }
-      return this.formatPublicProfile(biz.toJSON());
-    }
-
-    // In-Memory store fallback
-    const { businesses } = authService.getMemoryStore();
-    let biz = businesses.get(cleanId);
+    let biz = await Business.findOne({
+      $or: [{ sellerId: cleanId }, { slug: cleanId.toLowerCase() }],
+    });
 
     if (!biz) {
-      for (const b of businesses.values()) {
-        if (b.slug === cleanId.toLowerCase() || slugify(b.name) === cleanId.toLowerCase()) {
-          biz = b;
-          break;
-        }
-      }
-    }
-
-    if (!biz) {
-      // Lazy load from businessService
-      try {
-        const resolved = await businessService.getBySellerId(cleanId);
-        if (resolved) biz = resolved;
-      } catch {}
+      // Fall back to matching the slugified business name
+      const allBiz = await Business.find();
+      biz = allBiz.find((b) => slugify(b.name) === cleanId.toLowerCase());
     }
 
     if (!biz) {
@@ -83,7 +48,7 @@ const storefrontService = {
       throw err;
     }
 
-    return this.formatPublicProfile(biz);
+    return this.formatPublicProfile(biz.toJSON());
   },
 
   formatPublicProfile(biz) {
@@ -103,8 +68,8 @@ const storefrontService = {
       freeDeliveryThreshold: biz.freeDeliveryThreshold !== undefined ? biz.freeDeliveryThreshold : 25000,
       paymentMethod: biz.paymentMethod || 'both',
       paystackEnabled: biz.paystackEnabled !== false,
-      whatsappPhone: biz.whatsappPhone || '',
-      whatsappConnected: !!biz.whatsappConnected,
+      telegramBotUsername: biz.telegramBotUsername || '',
+      telegramBotUrl: biz.telegramBotUsername ? `https://t.me/${biz.telegramBotUsername}` : '',
       currency: 'NGN',
       createdAt: biz.createdAt,
     };
@@ -244,10 +209,10 @@ const storefrontService = {
     const store = await this.resolveStore(identifier);
     const storeUrl = `${baseUrl}/store/${store.slug || store.sellerId}`;
 
-    const title = `${store.name} | Official WhatsApp Store`;
+    const title = `${store.name} | Official Online Store`;
     const description =
       store.description ||
-      `Shop high quality products directly from ${store.name} on WhatsApp. Fast delivery across Nigeria and secure Paystack checkout.`;
+      `Shop products from ${store.name} online or through Telegram, with fast delivery across Nigeria and secure Paystack checkout.`;
     const image = store.logo || `${baseUrl}/static/images/default-storefront-og.png`;
 
     const openGraph = {
@@ -269,7 +234,7 @@ const storefrontService = {
       'name': store.name,
       'description': description,
       'url': storeUrl,
-      'telephone': store.whatsappPhone || store.phone,
+      'telephone': store.phone,
       'currenciesAccepted': 'NGN',
       'paymentAccepted': 'Cash, Credit Card, Bank Transfer',
       'priceRange': '₦₦',

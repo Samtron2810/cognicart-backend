@@ -1,152 +1,229 @@
 /**
- * Automated WhatsApp Notification Service
- * Dispatches event-driven transactional notifications for order placement, payment receipt, and fulfillment transitions
+ * Transactional Notification Service
+ *
+ * Commerce events are rendered once and dispatched through a channel adapter.
+ * Storefront events use Brevo email and bot-originated orders use the
+ * registered Telegram transport through the same provider-neutral boundary.
  */
 
+const Customer = require('../../models/Customer');
 const businessService = require('../sellers/businessService');
+const dispatcher = require('./notificationDispatcher');
+const templates = require('./notificationTemplates');
+const { isEmail } = require('../../utils/validators');
 const logger = require('../../utils/logger');
 
-// Lazy-loaded to avoid circular require with whatsappService
-function getWhatsAppService() {
-  return require('../whatsapp/whatsappService');
+const EVENTS = Object.freeze({
+  ORDER_CREATED: 'order.created',
+  PAYMENT_RECEIVED: 'payment.received',
+  ORDER_STATUS_CHANGED: 'order.status_changed',
+  BUYER_OTP: 'buyer.otp',
+});
+
+function normalizedEmail(value) {
+  const email = String(value || '').trim().toLowerCase();
+  if (!isEmail(email)) return '';
+  // Payment initialization previously fabricated addresses for Paystack when a
+  // buyer supplied none. They are valid syntax but can never receive mail.
+  if (email.endsWith('@wabac.ng')) return '';
+  return email;
+}
+
+async function resolveOrderEmail(order, payment = null) {
+  const direct = normalizedEmail(order && order.customerEmail);
+  if (direct) return direct;
+
+  const paymentEmail = normalizedEmail(payment && payment.email);
+  if (paymentEmail) return paymentEmail;
+
+  if (!order || !order.customerId || !order.sellerId) return '';
+  try {
+    const customer = await Customer.findOne({ _id: order.customerId, sellerId: order.sellerId }).select('email');
+    return normalizedEmail(customer && customer.email);
+  } catch (error) {
+    logger.warn('Could not resolve notification email from customer profile:', {
+      orderId: order.id,
+      error: error.message,
+    });
+    return '';
+  }
+}
+
+function replyToFor(business) {
+  const email = normalizedEmail(business && business.email);
+  return email ? { email, name: business.name || '' } : undefined;
+}
+
+function skipped(event, reason) {
+  return { delivered: false, event, reason };
+}
+
+async function dispatchEmail({ event, to, toName, business, rendered, tags = [] }) {
+  if (!to) return skipped(event, 'destination_missing');
+  return dispatcher.dispatch({
+    event,
+    channel: 'email',
+    to,
+    toName,
+    replyTo: replyToFor(business),
+    subject: rendered.subject,
+    text: rendered.text,
+    html: rendered.html,
+    tags: ['transactional', event.replace(/\./g, '-')].concat(tags),
+  });
 }
 
 const notificationService = {
-  /**
-   * Send WhatsApp Order Confirmation notification to customer
-   */
+  EVENTS,
+
+  /** Storefront order confirmation + single-use buyer tracking link. */
   async sendOrderConfirmation(order) {
-    if (!order || !order.customerPhone) return null;
+    if (!order) return skipped(EVENTS.ORDER_CREATED, 'order_missing');
+    if (order.source === 'manual') return skipped(EVENTS.ORDER_CREATED, 'manual_order');
 
-    try {
-      const biz = await businessService.getBySellerId(order.sellerId);
-      const storeName = (biz && biz.name) || 'Our Store';
-      const currency = '₦';
-
-      const itemsSummary = (order.items || [])
-        .map((i) => `• ${i.name} (x${i.quantity}) - ${currency}${i.subtotal.toLocaleString()}`)
-        .join('\n');
-
-      const messageBody = [
-        `🛍️ *Order Confirmed!*`,
-        `Hello ${order.customerName || 'Valued Customer'}, thank you for shopping with *${storeName}*!`,
-        ``,
-        `*Order Reference:* #${order.id}`,
-        `*Items:*`,
-        itemsSummary,
-        ``,
-        `*Subtotal:* ${currency}${(order.subtotal || 0).toLocaleString()}`,
-        `*Delivery Fee:* ${currency}${(order.deliveryFee || 0).toLocaleString()}`,
-        `*Total:* ${currency}${(order.total || 0).toLocaleString()}`,
-        `*Delivery Address:* ${order.deliveryAddress || 'Standard Delivery'}`,
-        `*Payment Status:* ${order.paymentStatus}`,
-        ``,
-        `We are preparing your package and will keep you updated. Reply here anytime if you have questions!`,
-      ].join('\n');
-
-      const whatsappService = getWhatsAppService();
-      const sent = await whatsappService.sendOutbound({
-        sellerId: order.sellerId,
-        to: order.customerPhone,
-        body: messageBody,
+    // Telegram-originated orders intentionally do not fall back to email: the
+    // bot transport owns that conversation and identity.
+    if (order.source === 'telegram') {
+      return dispatcher.dispatch({
+        event: EVENTS.ORDER_CREATED,
+        channel: 'telegram',
+        to: order.channelUserId,
+        order,
       });
-
-      logger.info('Order confirmation notification sent:', { orderId: order.id, to: order.customerPhone });
-      return sent;
-    } catch (err) {
-      logger.warn('Failed to send order confirmation notification:', { error: err.message, orderId: order.id });
-      return null;
     }
-  },
-
-  /**
-   * Send WhatsApp Payment Receipt notification to customer
-   */
-  async sendPaymentReceipt(payment, order) {
-    const toPhone = (order && order.customerPhone) || (payment && payment.customerPhone);
-    if (!payment || !toPhone) return null;
 
     try {
-      const sellerId = payment.sellerId || (order && order.sellerId);
-      const biz = await businessService.getBySellerId(sellerId);
-      const storeName = (biz && biz.name) || 'Our Store';
-      const currency = '₦';
+      const email = await resolveOrderEmail(order);
+      if (!email) return skipped(EVENTS.ORDER_CREATED, 'destination_missing');
+      if (!dispatcher.canSend('email')) return skipped(EVENTS.ORDER_CREATED, 'transport_not_configured');
 
-      const messageBody = [
-        `💳 *Payment Received!*`,
-        `Thank you! We have confirmed your payment of *${currency}${(payment.amount || 0).toLocaleString()}* for Order *#${payment.orderId}*.`,
-        ``,
-        `*Transaction Ref:* ${payment.reference}`,
-        `*Store:* ${storeName}`,
-        `*Channel:* Paystack Secure Payment`,
-        `*Date:* ${new Date().toLocaleDateString()}`,
-        ``,
-        `Your order is being processed for dispatch. We will send you another update once it's on the way!`,
-      ].join('\n');
+      const business = (await businessService.getBySellerId(order.sellerId)) || {};
+      let trackingUrl = '';
 
-      const whatsappService = getWhatsAppService();
-      const sent = await whatsappService.sendOutbound({
-        sellerId,
-        to: toPhone,
-        body: messageBody,
-      });
-
-      logger.info('Payment receipt notification sent:', { reference: payment.reference, to: toPhone });
-      return sent;
-    } catch (err) {
-      logger.warn('Failed to send payment receipt notification:', { error: err.message, reference: payment.reference });
-      return null;
-    }
-  },
-
-  /**
-   * Send WhatsApp status update notification (e.g. Shipped, Delivered)
-   */
-  async sendOrderStatusUpdate(order, newStatus) {
-    if (!order || !order.customerPhone) return null;
-
-    try {
-      const biz = await businessService.getBySellerId(order.sellerId);
-      const storeName = (biz && biz.name) || 'Our Store';
-
-      let statusMsg = '';
-      if (newStatus === 'Shipped') {
-        statusMsg = '🚚 Your package is on the way! Our courier will contact you shortly.';
-      } else if (newStatus === 'Delivered') {
-        statusMsg = '🎉 Your package has been marked as Delivered! We hope you love your purchase.';
-      } else if (newStatus === 'Confirmed') {
-        statusMsg = '✅ Your order has been reviewed and confirmed by our fulfillment team.';
-      } else if (newStatus === 'Processing') {
-        statusMsg = '📦 We are currently packing your items carefully.';
-      } else {
-        statusMsg = `Your order status has been updated to: *${newStatus}*.`;
+      try {
+        const shopperAuthService = require('../shop/shopperAuthService');
+        const magic = await shopperAuthService.createMagicLink({
+          phone: order.customerPhone,
+          email,
+          sellerId: order.sellerId,
+          orderId: order.id,
+        });
+        trackingUrl = magic.url;
+      } catch (error) {
+        logger.warn('Could not attach tracking link to order email:', {
+          orderId: order.id,
+          error: error.message,
+        });
       }
 
-      const messageBody = [
-        `📦 *Order Update: #${order.id}*`,
-        `Hello ${order.customerName || 'Valued Customer'},`,
-        statusMsg,
-        ``,
-        `*Store:* ${storeName}`,
-        `*Current Status:* ${newStatus}`,
-        ``,
-        `Thank you for choosing ${storeName}!`,
-      ].join('\n');
-
-      const whatsappService = getWhatsAppService();
-      const sent = await whatsappService.sendOutbound({
-        sellerId: order.sellerId,
-        to: order.customerPhone,
-        body: messageBody,
+      return dispatchEmail({
+        event: EVENTS.ORDER_CREATED,
+        to: email,
+        toName: order.customerName,
+        business,
+        rendered: templates.orderConfirmation({ order, business, trackingUrl }),
       });
-
-      logger.info('Order status notification sent:', { orderId: order.id, status: newStatus, to: order.customerPhone });
-      return sent;
-    } catch (err) {
-      logger.warn('Failed to send order status notification:', { error: err.message, orderId: order.id });
-      return null;
+    } catch (error) {
+      logger.warn('Failed to prepare order confirmation:', {
+        orderId: order.id,
+        error: error.message,
+      });
+      return skipped(EVENTS.ORDER_CREATED, 'preparation_failed');
     }
   },
+
+  /** Paystack-verified payment receipt. */
+  async sendPaymentReceipt(payment, order) {
+    if (!payment) return skipped(EVENTS.PAYMENT_RECEIVED, 'payment_missing');
+    if (order && order.source === 'manual') return skipped(EVENTS.PAYMENT_RECEIVED, 'manual_order');
+
+    if (order && order.source === 'telegram') {
+      return dispatcher.dispatch({
+        event: EVENTS.PAYMENT_RECEIVED,
+        channel: 'telegram',
+        to: order.channelUserId,
+        payment,
+        order,
+      });
+    }
+
+    try {
+      const email = await resolveOrderEmail(order, payment);
+      if (!email) return skipped(EVENTS.PAYMENT_RECEIVED, 'destination_missing');
+      const sellerId = payment.sellerId || (order && order.sellerId);
+      const business = (await businessService.getBySellerId(sellerId)) || {};
+
+      return dispatchEmail({
+        event: EVENTS.PAYMENT_RECEIVED,
+        to: email,
+        toName: order && order.customerName,
+        business,
+        rendered: templates.paymentReceipt({ payment, order, business }),
+      });
+    } catch (error) {
+      logger.warn('Failed to prepare payment receipt:', {
+        reference: payment.reference,
+        error: error.message,
+      });
+      return skipped(EVENTS.PAYMENT_RECEIVED, 'preparation_failed');
+    }
+  },
+
+  /** Fulfilment transition (Confirmed, Processing, Shipped, Delivered, etc.). */
+  async sendOrderStatusUpdate(order, newStatus) {
+    if (!order) return skipped(EVENTS.ORDER_STATUS_CHANGED, 'order_missing');
+    if (order.source === 'manual') return skipped(EVENTS.ORDER_STATUS_CHANGED, 'manual_order');
+
+    if (order.source === 'telegram') {
+      return dispatcher.dispatch({
+        event: EVENTS.ORDER_STATUS_CHANGED,
+        channel: 'telegram',
+        to: order.channelUserId,
+        order,
+        status: newStatus,
+      });
+    }
+
+    try {
+      const email = await resolveOrderEmail(order);
+      if (!email) return skipped(EVENTS.ORDER_STATUS_CHANGED, 'destination_missing');
+      const business = (await businessService.getBySellerId(order.sellerId)) || {};
+
+      return dispatchEmail({
+        event: EVENTS.ORDER_STATUS_CHANGED,
+        to: email,
+        toName: order.customerName,
+        business,
+        rendered: templates.orderStatus({ order, business, status: newStatus }),
+      });
+    } catch (error) {
+      logger.warn('Failed to prepare order status notification:', {
+        orderId: order.id,
+        status: newStatus,
+        error: error.message,
+      });
+      return skipped(EVENTS.ORDER_STATUS_CHANGED, 'preparation_failed');
+    }
+  },
+
+  /** Buyer login code sent only to a previously associated email address. */
+  async sendBuyerOtp({ email, code, expiresInMinutes = 10 }) {
+    const to = normalizedEmail(email);
+    if (!to) return skipped(EVENTS.BUYER_OTP, 'destination_missing');
+
+    return dispatchEmail({
+      event: EVENTS.BUYER_OTP,
+      to,
+      business: {},
+      rendered: templates.buyerOtp({ code, expiresInMinutes }),
+      tags: ['authentication'],
+    });
+  },
+
+  // Exposed for focused transport tests; commerce callers should use the
+  // event-specific methods above.
+  dispatcher,
+  resolveOrderEmail,
 };
 
 module.exports = notificationService;

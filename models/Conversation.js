@@ -1,6 +1,6 @@
 /**
- * Conversation Mongoose Model
- * Aggregates message threads between sellers and customer WhatsApp numbers
+ * Channel Conversation Model
+ * Aggregates seller/customer threads independently of the transport adapter.
  */
 
 const mongoose = require('mongoose');
@@ -12,28 +12,25 @@ const conversationSchema = new mongoose.Schema(
       required: [true, 'Seller ID is required for tenant isolation'],
       index: true,
     },
-    customerPhone: {
+    channel: {
       type: String,
+      enum: ['telegram'],
+      default: 'telegram',
       required: true,
       index: true,
     },
-    businessPhone: {
-      type: String,
-      default: '',
-    },
-    lastMessage: {
-      type: String,
-      default: '',
-    },
-    lastMessageAt: {
-      type: Date,
-      default: Date.now,
-      index: true,
-    },
-    unreadCount: {
-      type: Number,
-      default: 0,
-    },
+    // Seller-side Telegram bot id and customer-side Telegram user id.
+    channelAccountId: { type: String, default: '', trim: true },
+    channelUserId: { type: String, required: true, trim: true },
+    channelUsername: { type: String, default: '', trim: true },
+    customerName: { type: String, default: '', trim: true },
+
+    // Phone is progressively attached after Telegram contact sharing.
+    customerPhone: { type: String, default: '', index: true },
+
+    lastMessage: { type: String, default: '' },
+    lastMessageAt: { type: Date, default: Date.now, index: true },
+    unreadCount: { type: Number, default: 0 },
   },
   {
     timestamps: true,
@@ -49,7 +46,10 @@ const conversationSchema = new mongoose.Schema(
   }
 );
 
-conversationSchema.index({ sellerId: 1, customerPhone: 1 }, { unique: true });
+conversationSchema.index(
+  { sellerId: 1, channel: 1, channelUserId: 1 },
+  { unique: true }
+);
 conversationSchema.index({ sellerId: 1, lastMessageAt: -1 });
 
 const Conversation = mongoose.model('Conversation', conversationSchema);

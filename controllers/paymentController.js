@@ -38,9 +38,7 @@ async function initializePayment(req, res, next) {
 async function verifyPayment(req, res, next) {
   try {
     const { reference } = req.params;
-    const signature = req.headers['x-paystack-signature'] || 'mock';
-
-    const transaction = await paymentService.verify(reference, signature);
+    const transaction = await paymentService.verify(reference);
     res.status(200).json(transaction);
   } catch (error) {
     next(error);
@@ -91,7 +89,7 @@ async function handlePaystackWebhook(req, res, next) {
     logger.info('Paystack webhook event received:', { event });
 
     if (event === 'charge.success' && data && data.reference) {
-      await paymentService.verify(data.reference, 'webhook');
+      await paymentService.verify(data.reference);
     }
 
     res.status(200).json({ success: true, message: 'WEBHOOK_PROCESSED' });

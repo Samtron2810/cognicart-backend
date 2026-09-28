@@ -1,130 +1,112 @@
 /**
  * Business Profile Service
- * Manages seller business settings, delivery parameters, bank info, and WhatsApp connection status
+ * Manages seller business settings, delivery parameters, bank info, and public share contacts
  */
 
+const mongoose = require('mongoose');
 const Business = require('../../models/Business');
 const User = require('../../models/User');
-const { isDbConnected } = require('../../config/db');
-const authService = require('../auth/authService');
 const logger = require('../../utils/logger');
+
+const UPDATABLE_FIELDS = [
+  'name',
+  'slug',
+  'description',
+  'phone',
+  'email',
+  'location',
+  'logo',
+  'deliveryInfo',
+  'deliveryFee',
+  'deliveryTime',
+  'freeDeliveryThreshold',
+  'paymentMethod',
+  'paystackEnabled',
+  'bankName',
+  'accountNumber',
+  'accountName',
+];
 
 const businessService = {
   /**
-   * Get business profile by seller ID
+   * Get business profile by seller ID.
+   * Returns null when neither a profile nor the owning seller exists.
    */
   async getBySellerId(sellerId) {
-    if (isDbConnected()) {
-      let business = await Business.findOne({ sellerId });
-      if (!business) {
-        // Create default business profile if none exists
-        const user = await User.findById(sellerId);
-        business = await Business.create({
-          sellerId,
-          name: user ? user.businessName : 'My Store',
-          email: user ? user.email : '',
-          phone: user ? user.phone : '',
-        });
-      }
-      return business.toJSON();
-    }
+    if (!sellerId) return null;
 
-    // In-memory fallback
-    const { businesses, users } = authService.getMemoryStore();
-    let business = businesses.get(sellerId);
+    const business = await Business.findOne({ sellerId });
+    if (business) return business.toJSON();
+
+    // Lazily create the default profile for a seller that exists but has none yet
+    if (!mongoose.isValidObjectId(sellerId)) return null;
+
+    const user = await User.findById(sellerId);
+    if (!user) return null;
+
+    const created = await Business.create({
+      sellerId,
+      name: user.businessName,
+      email: user.email,
+      phone: user.phone,
+    });
+
+    logger.info('Default business profile created:', { sellerId });
+    return created.toJSON();
+  },
+
+  /**
+   * Same as getBySellerId but throws a 404 instead of returning null.
+   */
+  async requireBySellerId(sellerId) {
+    const business = await this.getBySellerId(sellerId);
     if (!business) {
-      const user = users.get(sellerId);
-      const now = new Date().toISOString();
-      business = {
-        id: 'biz_' + sellerId,
-        sellerId,
-        name: user ? user.businessName : 'My Store',
-        email: user ? user.email : '',
-        phone: user ? user.phone : '',
-        location: '',
-        description: '',
-        deliveryInfo: 'Lagos 1-2 days, outside Lagos 2-4 days',
-        deliveryFee: 1500,
-        deliveryTime: '1-3 days',
-        freeDeliveryThreshold: 25000,
-        paymentMethod: 'both',
-        paystackEnabled: true,
-        whatsappConnected: false,
-        createdAt: now,
-        updatedAt: now,
-      };
-      businesses.set(sellerId, business);
+      const err = new Error('Business profile not found');
+      err.statusCode = 404;
+      throw err;
     }
     return business;
   },
 
   /**
+   * Read the business profile including secret fields (server-side use only).
+   */
+  async getWithSecrets(sellerId) {
+    if (!sellerId) return null;
+    const business = await Business.findOne({ sellerId }).select(
+      '+telegramBotToken +telegramWebhookSecret'
+    );
+    return business ? business.toObject() : null;
+  },
+
+  /**
    * Update business profile for the authenticated seller
    */
-  async update(sellerId, payload) {
-    const allowedFields = [
-      'name',
-      'slug',
-      'description',
-      'phone',
-      'email',
-      'location',
-      'logo',
-      'deliveryInfo',
-      'deliveryFee',
-      'deliveryTime',
-      'freeDeliveryThreshold',
-      'paymentMethod',
-      'paystackEnabled',
-      'bankName',
-      'accountNumber',
-      'accountName',
-      'whatsappPhone',
-      'whatsappConnected',
-      'whatsappVerifiedAt',
-    ];
+  async update(sellerId, payload = {}) {
+    if (!sellerId) {
+      const err = new Error('Seller ID is required');
+      err.statusCode = 400;
+      throw err;
+    }
 
     const updates = {};
-    for (const field of allowedFields) {
+    for (const field of UPDATABLE_FIELDS) {
       if (payload[field] !== undefined) {
         updates[field] = payload[field];
       }
     }
 
-    if (isDbConnected()) {
-      let business = await Business.findOneAndUpdate(
-        { sellerId },
-        { $set: updates },
-        { new: true, runValidators: true, upsert: true }
-      );
-      logger.info('Business profile updated (DB):', { sellerId });
-      return business.toJSON();
-    }
+    // Guarantee the profile exists before patching it
+    await this.getBySellerId(sellerId);
 
-    // In-memory fallback
-    const { businesses, users } = authService.getMemoryStore();
-    let current = businesses.get(sellerId);
-    const now = new Date().toISOString();
-    if (!current) {
-      const user = users.get(sellerId);
-      current = {
-        id: 'biz_' + sellerId,
-        sellerId,
-        name: user ? user.businessName : 'My Store',
-        email: user ? user.email : '',
-        phone: user ? user.phone : '',
-        createdAt: now,
-      };
-    }
+    const business = await Business.findOneAndUpdate(
+      { sellerId },
+      { $set: updates },
+      { new: true, runValidators: true, upsert: true }
+    );
 
-    const updated = {
-      ...current,
-      ...updates,
-      updatedAt: now,
-    };
-    businesses.set(sellerId, updated);
-    logger.info('Business profile updated (Memory):', { sellerId });
-    return updated;
+    logger.info('Business profile updated:', { sellerId });
+    return business.toJSON();
   },
 };
 

@@ -1,260 +1,163 @@
 /**
  * Authentication and User Service
- * Supports MongoDB with seamless in-memory fallback for local development/testing
+ * MongoDB-backed. There is no in-memory fallback and no pre-seeded account:
+ * every account must exist in the database.
  */
 
-const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose');
 const User = require('../../models/User');
 const Business = require('../../models/Business');
 const { generateToken } = require('../../utils/generateToken');
-const { isDbConnected } = require('../../config/db');
 const { isEmail, isStrongPassword, isNigerianPhone, normalizePhone, sanitize } = require('../../utils/validators');
 const logger = require('../../utils/logger');
 
-// In-Memory store for development/testing when MongoDB daemon is not running
-const memoryUsers = new Map();
-const memoryBusinesses = new Map();
+const VALID_ROLES = ['seller', 'admin', 'platform_owner'];
 
-// Seed initial admin & platform owner accounts for dev/testing
-function seedDefaultAccounts() {
-  if (memoryUsers.size > 0) return;
-
-  const adminPasswordHash = bcrypt.hashSync('Admin123!', 10);
-  const ownerPasswordHash = bcrypt.hashSync('Owner123!', 10);
-
-  const admin = {
-    id: 'seller_admin',
-    _id: 'seller_admin',
-    businessName: 'Cognicart Platform',
-    email: 'admin@cognicart.ng',
-    phone: '+2348000000000',
-    password: adminPasswordHash,
-    role: 'admin',
-    isActive: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  const owner = {
-    id: 'seller_owner',
-    _id: 'seller_owner',
-    businessName: 'Cognicart Owner',
-    email: 'owner@cognicart.ng',
-    phone: '+2348000000001',
-    password: ownerPasswordHash,
-    role: 'platform_owner',
-    isActive: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  memoryUsers.set(admin.id, admin);
-  memoryUsers.set(admin.email.toLowerCase(), admin);
-
-  memoryUsers.set(owner.id, owner);
-  memoryUsers.set(owner.email.toLowerCase(), owner);
+function badRequest(message, statusCode = 400) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
 }
 
-seedDefaultAccounts();
+/**
+ * Validate and normalize a signup payload shared by registration and provisioning.
+ */
+function normalizeSignupPayload({ businessName, email, password, phone }) {
+  if (!businessName || typeof businessName !== 'string') {
+    throw badRequest('Business name is required');
+  }
+
+  const cleanName = sanitize(businessName, 80);
+  if (cleanName.length < 2) {
+    throw badRequest('Business name must be at least 2 characters');
+  }
+
+  const cleanEmail = (email || '').trim().toLowerCase();
+  if (!isEmail(cleanEmail)) {
+    throw badRequest('Invalid email format');
+  }
+
+  if (!isStrongPassword(password)) {
+    throw badRequest(
+      'Password must be at least 8 characters and contain at least one uppercase letter and one number'
+    );
+  }
+
+  let cleanPhone = (phone || '').trim();
+  if (cleanPhone && !isNigerianPhone(cleanPhone)) {
+    throw badRequest('Invalid Nigerian phone number format');
+  }
+  if (cleanPhone) {
+    cleanPhone = normalizePhone(cleanPhone);
+  }
+
+  return { cleanName, cleanEmail, cleanPhone };
+}
 
 const authService = {
   /**
-   * Register a new seller
+   * Create a user account together with its default business profile.
+   * `role` is trusted here, so this must only be called by server-side code
+   * (registration endpoint, provisioning CLI, tests) - never with user input.
    */
-  async register({ businessName, email, password, phone, role }) {
-    if (!businessName || typeof businessName !== 'string') {
-      const err = new Error('Business name is required');
-      err.statusCode = 400;
-      throw err;
+  async createAccount({ businessName, email, password, phone, role = 'seller' }) {
+    const { cleanName, cleanEmail, cleanPhone } = normalizeSignupPayload({
+      businessName,
+      email,
+      password,
+      phone,
+    });
+
+    if (!VALID_ROLES.includes(role)) {
+      throw badRequest(`Invalid role. Allowed roles: ${VALID_ROLES.join(', ')}`);
     }
 
-    const cleanName = sanitize(businessName, 80);
-    if (cleanName.length < 2) {
-      const err = new Error('Business name must be at least 2 characters');
-      err.statusCode = 400;
-      throw err;
+    const existingUser = await User.findOne({ email: cleanEmail });
+    if (existingUser) {
+      throw badRequest('Email already registered', 409);
     }
 
-    const cleanEmail = (email || '').trim().toLowerCase();
-    if (!isEmail(cleanEmail)) {
-      const err = new Error('Invalid email format');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    if (!isStrongPassword(password)) {
-      const err = new Error('Password must be at least 8 characters and contain at least one uppercase letter and one number');
-      err.statusCode = 400;
-      throw err;
-    }
-
-    let cleanPhone = (phone || '').trim();
-    if (cleanPhone && !isNigerianPhone(cleanPhone)) {
-      const err = new Error('Invalid Nigerian phone number format');
-      err.statusCode = 400;
-      throw err;
-    }
-    if (cleanPhone) {
-      cleanPhone = normalizePhone(cleanPhone);
-    }
-
-    // Role assignment
-    const defaultRole = cleanEmail.includes('admin@')
-      ? 'admin'
-      : cleanEmail.includes('owner@')
-      ? 'platform_owner'
-      : role || 'seller';
-
-    if (isDbConnected()) {
-      const existingUser = await User.findOne({ email: cleanEmail });
-      if (existingUser) {
-        const err = new Error('Email already registered');
-        err.statusCode = 409;
-        throw err;
-      }
-
-      const user = await User.create({
+    let user;
+    try {
+      user = await User.create({
         businessName: cleanName,
         email: cleanEmail,
         password,
         phone: cleanPhone,
-        role: defaultRole,
+        role,
         isActive: true,
       });
+    } catch (error) {
+      // Unique index race condition on email
+      if (error && error.code === 11000) {
+        throw badRequest('Email already registered', 409);
+      }
+      throw error;
+    }
 
-      // Automatically initialize default business profile
+    const sellerId = user._id.toString();
+
+    // Automatically initialize the default business profile
+    try {
       await Business.create({
-        sellerId: user._id.toString(),
+        sellerId,
         name: cleanName,
         email: cleanEmail,
         phone: cleanPhone,
       });
-
-      const token = generateToken({ id: user._id.toString(), email: user.email, role: user.role });
-      const seller = user.toJSON();
-
-      logger.info('Seller registered successfully (DB):', { id: user._id.toString(), email: user.email });
-      return { token, seller };
+    } catch (error) {
+      if (!error || error.code !== 11000) {
+        // Roll back the orphaned user so registration stays atomic enough to retry
+        await User.deleteOne({ _id: user._id }).catch(() => {});
+        throw error;
+      }
     }
 
-    // In-memory fallback
-    if (memoryUsers.has(cleanEmail)) {
-      const err = new Error('Email already registered');
-      err.statusCode = 409;
-      throw err;
-    }
+    return user;
+  },
 
-    const userId = 'seller_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const passwordHash = await bcrypt.hash(password, 10);
-    const now = new Date().toISOString();
+  /**
+   * Register a new seller.
+   * Self-service registration can only ever create a 'seller' account -
+   * privileged roles are provisioned with `npm run create-admin`.
+   */
+  async register({ businessName, email, password, phone }) {
+    const user = await this.createAccount({ businessName, email, password, phone, role: 'seller' });
 
-    const memUser = {
-      id: userId,
-      _id: userId,
-      businessName: cleanName,
-      email: cleanEmail,
-      phone: cleanPhone,
-      password: passwordHash,
-      role: defaultRole,
-      isActive: true,
-      createdAt: now,
-      updatedAt: now,
-    };
+    const token = generateToken({ id: user._id.toString(), email: user.email, role: user.role });
+    const seller = user.toJSON();
 
-    memoryUsers.set(userId, memUser);
-    memoryUsers.set(cleanEmail, memUser);
-
-    const memBusiness = {
-      id: 'biz_' + userId,
-      sellerId: userId,
-      name: cleanName,
-      email: cleanEmail,
-      phone: cleanPhone,
-      location: '',
-      description: '',
-      deliveryInfo: 'Lagos 1-2 days, outside Lagos 2-4 days',
-      deliveryFee: 1500,
-      deliveryTime: '1-3 days',
-      freeDeliveryThreshold: 25000,
-      paymentMethod: 'both',
-      paystackEnabled: true,
-      whatsappConnected: false,
-      createdAt: now,
-      updatedAt: now,
-    };
-    memoryBusinesses.set(userId, memBusiness);
-
-    const token = generateToken({ id: userId, email: cleanEmail, role: defaultRole });
-    const { password: _p, _id: _i, ...seller } = memUser;
-
-    logger.info('Seller registered successfully (Memory):', { id: userId, email: cleanEmail });
+    logger.info('Seller registered successfully:', { id: user._id.toString(), email: user.email });
     return { token, seller };
   },
 
   /**
-   * Log in an existing seller
+   * Log in an existing user
    */
   async login({ email, password }) {
     const cleanEmail = (email || '').trim().toLowerCase();
-    if (!cleanEmail || !password) {
-      const err = new Error('Email and password are required');
-      err.statusCode = 400;
-      throw err;
+    if (!cleanEmail || !password || typeof password !== 'string') {
+      throw badRequest('Email and password are required');
     }
 
-    if (isDbConnected()) {
-      const user = await User.findOne({ email: cleanEmail }).select('+password');
-      if (!user) {
-        const err = new Error('Invalid email or password');
-        err.statusCode = 401;
-        throw err;
-      }
-
-      const isMatch = await user.matchPassword(password);
-      if (!isMatch) {
-        const err = new Error('Invalid email or password');
-        err.statusCode = 401;
-        throw err;
-      }
-
-      if (user.isActive === false) {
-        const err = new Error('Account suspended. Contact platform support.');
-        err.statusCode = 403;
-        throw err;
-      }
-
-      const token = generateToken({ id: user._id.toString(), email: user.email, role: user.role });
-      const seller = user.toJSON();
-
-      logger.info('Seller logged in (DB):', { id: user._id.toString(), email: user.email });
-      return { token, seller };
+    const user = await User.findOne({ email: cleanEmail }).select('+password');
+    if (!user) {
+      throw badRequest('Invalid email or password', 401);
     }
 
-    // In-memory fallback
-    const memUser = memoryUsers.get(cleanEmail);
-    if (!memUser) {
-      const err = new Error('Invalid email or password');
-      err.statusCode = 401;
-      throw err;
-    }
-
-    const isMatch = await bcrypt.compare(password, memUser.password);
+    const isMatch = await user.matchPassword(password);
     if (!isMatch) {
-      const err = new Error('Invalid email or password');
-      err.statusCode = 401;
-      throw err;
+      throw badRequest('Invalid email or password', 401);
     }
 
-    if (memUser.isActive === false) {
-      const err = new Error('Account suspended. Contact platform support.');
-      err.statusCode = 403;
-      throw err;
+    if (user.isActive === false) {
+      throw badRequest('Account suspended. Contact platform support.', 403);
     }
 
-    const token = generateToken({ id: memUser.id, email: memUser.email, role: memUser.role });
-    const { password: _p, _id: _i, ...seller } = memUser;
+    const token = generateToken({ id: user._id.toString(), email: user.email, role: user.role });
+    const seller = user.toJSON();
 
-    logger.info('Seller logged in (Memory):', { id: memUser.id, email: memUser.email });
+    logger.info('Seller logged in:', { id: user._id.toString(), email: user.email });
     return { token, seller };
   },
 
@@ -262,46 +165,21 @@ const authService = {
    * Retrieve current authenticated user profile
    */
   async getMe(userId) {
-    if (isDbConnected()) {
-      const user = await User.findById(userId);
-      if (!user) {
-        const err = new Error('Seller not found');
-        err.statusCode = 404;
-        throw err;
-      }
-      return user.toJSON();
+    const user = await this.findUserById(userId);
+    if (!user) {
+      throw badRequest('Seller not found', 404);
     }
-
-    const memUser = memoryUsers.get(userId);
-    if (!memUser) {
-      const err = new Error('Seller not found');
-      err.statusCode = 404;
-      throw err;
-    }
-
-    const { password: _p, _id: _i, ...seller } = memUser;
-    return seller;
+    return user.toJSON();
   },
 
   /**
-   * Find user by ID (for auth middleware)
+   * Find user by ID (for auth middleware). Returns null for unknown/invalid ids.
    */
   async findUserById(userId) {
-    if (isDbConnected()) {
-      return User.findById(userId);
-    }
-    const memUser = memoryUsers.get(userId);
-    if (!memUser) return null;
-    const { password: _p, ...user } = memUser;
-    return user;
-  },
-
-  /**
-   * Memory store helpers for business service & tests
-   */
-  getMemoryStore() {
-    return { users: memoryUsers, businesses: memoryBusinesses };
+    if (!userId || !mongoose.isValidObjectId(userId)) return null;
+    return User.findById(userId);
   },
 };
 
 module.exports = authService;
+module.exports.VALID_ROLES = VALID_ROLES;

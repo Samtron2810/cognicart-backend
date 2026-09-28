@@ -54,8 +54,7 @@ const payoutSchema = new mongoose.Schema(
     reference: {
       type: String,
       required: true,
-      unique: true,
-      index: true,
+      unique: true, // `unique` already builds the index; do not add `index: true` as well
     },
     status: {
       type: String,
@@ -94,8 +93,10 @@ const payoutSchema = new mongoose.Schema(
   }
 );
 
+// `status` is already indexed at the path level above (`index: true`).
+// Re-declaring `payoutSchema.index({ status: 1 })` here produced the
+// "Duplicate schema index on {\"status\":1}" Mongoose warning.
 payoutSchema.index({ sellerId: 1, createdAt: -1 });
-payoutSchema.index({ status: 1 });
 
 const Payout = mongoose.model('Payout', payoutSchema);
 

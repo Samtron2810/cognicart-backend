@@ -49,6 +49,15 @@ function sanitize(input, maxLen = 500) {
   return cleaned;
 }
 
+/**
+ * Escape user input before embedding it in a MongoDB $regex query,
+ * preventing regex injection / ReDoS through search parameters.
+ */
+function escapeRegex(input) {
+  if (input === null || input === undefined) return '';
+  return String(input).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function clampRequestSize(payloadStr, maxKB = 500) {
   if (!payloadStr) return true;
   const sizeInBytes = Buffer.byteLength(payloadStr, 'utf8');
@@ -61,5 +70,6 @@ module.exports = {
   isNigerianPhone,
   normalizePhone,
   sanitize,
+  escapeRegex,
   clampRequestSize,
 };

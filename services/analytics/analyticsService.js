@@ -113,10 +113,14 @@ const analyticsService = {
       if (order.orderStatus === 'Cancelled') continue;
 
       for (const item of order.items || []) {
-        const pId = item.productId;
+        // Off-catalog manual items have no productId. Keep distinct custom
+        // products separate by normalized name instead of collapsing every
+        // bespoke item into one undefined bucket.
+        const pId = item.productId || `custom:${String(item.name || '').trim().toLowerCase()}`;
         if (!statsMap.has(pId)) {
           statsMap.set(pId, {
-            productId: pId,
+            productId: item.productId || null,
+            isCustomItem: !item.productId,
             name: item.name,
             unitsSold: 0,
             revenue: 0,
@@ -177,6 +181,9 @@ const analyticsService = {
 
     const headers = [
       'Order ID',
+      'Order Reference',
+      'Source',
+      'Source Channel',
       'Customer Name',
       'Phone',
       'Items Count',
@@ -185,7 +192,9 @@ const analyticsService = {
       'Delivery Fee (NGN)',
       'Total (NGN)',
       'Payment Status',
+      'Payment Method',
       'Order Status',
+      'Expected Delivery',
       'Date',
     ];
 
@@ -196,6 +205,9 @@ const analyticsService = {
 
       return [
         escapeCsvField(o.id),
+        escapeCsvField(o.reference),
+        escapeCsvField(o.source),
+        escapeCsvField(o.sourceChannel),
         escapeCsvField(o.customerName),
         escapeCsvField(o.customerPhone),
         escapeCsvField((o.items || []).length),
@@ -204,7 +216,9 @@ const analyticsService = {
         escapeCsvField(o.deliveryFee),
         escapeCsvField(o.total),
         escapeCsvField(o.paymentStatus),
+        escapeCsvField(o.paymentMethod),
         escapeCsvField(o.orderStatus),
+        escapeCsvField(o.expectedDeliveryDate),
         escapeCsvField(o.createdAt),
       ].join(',');
     });

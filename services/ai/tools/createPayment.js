@@ -4,6 +4,7 @@
 
 const orderService = require('../../orders/orderService');
 const paymentService = require('../../payments/paymentService');
+const { requireOrderAccess } = require('../toolGuards');
 
 const definition = {
   type: 'function',
@@ -27,11 +28,14 @@ const definition = {
   },
 };
 
-async function execute(sellerId, args) {
+async function execute(sellerId, args, context = {}) {
   if (!args || !args.orderId) throw new Error('orderId is required');
 
   const order = await orderService.getById(args.orderId, sellerId);
   if (!order) throw new Error(`Order not found: ${args.orderId}`);
+
+  // Never generate a payment link (or expose an order total) for someone else
+  requireOrderAccess(order, context, args.orderId);
 
   if (order.paymentStatus === 'Paid') {
     return {

@@ -1,6 +1,6 @@
 /**
  * Seller and Business Profile Controller
- * Manages seller settings, delivery rates, WhatsApp connection status, and public storefront info
+ * Manages seller settings, delivery rates, public share contacts, and storefront info
  */
 
 const businessService = require('../services/sellers/businessService');
@@ -60,8 +60,11 @@ async function getPublicStorefront(req, res, next) {
       freeDeliveryThreshold: business.freeDeliveryThreshold,
       paymentMethod: business.paymentMethod,
       paystackEnabled: business.paystackEnabled,
-      whatsappPhone: business.whatsappPhone,
-      whatsappConnected: business.whatsappConnected,
+      phone: business.phone,
+      telegramBotUsername: business.telegramBotUsername,
+      telegramBotUrl: business.telegramBotUsername
+        ? `https://t.me/${business.telegramBotUsername}`
+        : '',
       createdAt: business.createdAt,
     };
 

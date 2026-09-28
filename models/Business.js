@@ -9,8 +9,7 @@ const businessSchema = new mongoose.Schema(
     sellerId: {
       type: String,
       required: true,
-      unique: true,
-      index: true,
+      unique: true, // `unique` already builds the index
     },
     name: {
       type: String,
@@ -89,17 +88,45 @@ const businessSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
-    whatsappPhone: {
+    // Telegram Bot API connection. Secrets are excluded from every normal query
+    // and JSON response; server-side adapters explicitly opt in with select().
+    telegramBotId: {
+      type: String,
+      trim: true,
+      unique: true,
+      sparse: true,
+    },
+    telegramBotUsername: {
       type: String,
       default: '',
+      trim: true,
     },
-    whatsappConnected: {
+    telegramBotToken: {
+      type: String,
+      trim: true,
+      select: false,
+    },
+    telegramWebhookSecret: {
+      type: String,
+      trim: true,
+      select: false,
+    },
+    telegramWebhookUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    telegramConnected: {
       type: Boolean,
       default: false,
     },
-    whatsappVerifiedAt: {
+    telegramConnectedAt: {
       type: Date,
       default: null,
+    },
+    telegramWebhookVerified: {
+      type: Boolean,
+      default: false,
     },
   },
   {
@@ -110,6 +137,9 @@ const businessSchema = new mongoose.Schema(
         ret.id = ret._id ? ret._id.toString() : ret.id;
         delete ret._id;
         delete ret.__v;
+        // Never expose Telegram credentials through an API response
+        delete ret.telegramBotToken;
+        delete ret.telegramWebhookSecret;
         return ret;
       },
     },

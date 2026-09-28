@@ -10,7 +10,7 @@ router.get('/', (req, res) => {
   res.status(200).json({
     success: true,
     name: 'WABAC API',
-    description: 'WhatsApp Business AI Commerce Backend Platform',
+    description: 'Telegram and storefront AI commerce backend platform',
     version: '1.0.0',
     documentation: '/api',
   });
@@ -28,7 +28,7 @@ router.get('/api', (req, res) => {
       products: '/api/products',
       orders: '/api/orders',
       customers: '/api/customers',
-      whatsapp: '/api/whatsapp',
+      telegram: '/api/telegram',
       payments: '/api/payments',
       ai: '/api/ai',
       analytics: '/api/analytics',

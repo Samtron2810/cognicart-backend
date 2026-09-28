@@ -3,14 +3,15 @@
  * Multi-tenant order lifecycle, frozen price snapshots, stock reservation, and idempotency
  */
 
+const mongoose = require('mongoose');
 const Order = require('../../models/Order');
-const Product = require('../../models/Product');
+const { AUTOMATIC_SOURCES } = require('../../models/Order');
+const { nextOrderNumber } = require('../../models/Counter');
 const { getEffectivePrice } = require('../../models/Product');
-const { isDbConnected } = require('../../config/db');
 const customerService = require('../customers/customerService');
 const productService = require('../products/productService');
 const businessService = require('../sellers/businessService');
-const { sanitize, normalizePhone } = require('../../utils/validators');
+const { sanitize, escapeRegex, normalizePhone, isEmail } = require('../../utils/validators');
 const logger = require('../../utils/logger');
 
 function getNotificationService() {
@@ -21,15 +22,17 @@ function getNotificationService() {
   }
 }
 
-// In-Memory store for development/testing when MongoDB daemon is not running
-const memoryOrders = new Map();
-const memoryIdempotency = new Map();
+function notFound(message = 'Order not found') {
+  const err = new Error(message);
+  err.statusCode = 404;
+  return err;
+}
 
 const orderService = {
   /**
    * Create an order with authoritative price calculation and stock deduction
    */
-  async create(sellerId, payload, idempotencyKey) {
+  async create(sellerId, payload, idempotencyKey, options = {}) {
     if (!sellerId) {
       const err = new Error('Seller ID is required');
       err.statusCode = 400;
@@ -38,18 +41,10 @@ const orderService = {
 
     // Idempotency guard: return cached order if key was already processed
     if (idempotencyKey) {
-      if (isDbConnected()) {
-        const existingOrder = await Order.findOne({ sellerId, idempotencyKey });
-        if (existingOrder) {
-          logger.info('Idempotent order hit (DB):', { idempotencyKey, orderId: existingOrder._id.toString() });
-          return existingOrder.toJSON();
-        }
-      } else {
-        const cachedId = memoryIdempotency.get(idempotencyKey);
-        if (cachedId && memoryOrders.has(cachedId)) {
-          logger.info('Idempotent order hit (Memory):', { idempotencyKey, orderId: cachedId });
-          return memoryOrders.get(cachedId);
-        }
+      const existingOrder = await Order.findOne({ sellerId, idempotencyKey });
+      if (existingOrder) {
+        logger.info('Idempotent order hit:', { idempotencyKey, orderId: existingOrder._id.toString() });
+        return existingOrder.toJSON();
       }
     }
 
@@ -67,16 +62,45 @@ const orderService = {
 
     const customerName = sanitize(payload.customer.name, 100);
     const customerPhone = normalizePhone(payload.customer.phone) || payload.customer.phone.trim();
+    const rawEmail = String(payload.customer.email || '').trim().toLowerCase();
+    const customerEmail = isEmail(rawEmail) ? rawEmail : '';
     const customerAddress = sanitize(payload.deliveryAddress || payload.customer.address || '', 300);
+    const source = AUTOMATIC_SOURCES.includes(options.source) ? options.source : 'storefront';
 
-    // Upsert customer profile under seller
-    const customer = await customerService.upsert(sellerId, {
-      name: customerName,
-      phone: customerPhone,
-      whatsappId: payload.customer.whatsappId || customerPhone,
-      address: customerAddress,
-      email: payload.customer.email,
-    });
+    // Telegram identity is decisive. Contact sharing may prove a phone but it
+    // must not merge or claim a same-phone storefront/email profile.
+    let customer;
+    if (source === 'telegram' && options.channelUserId) {
+      customer = await customerService.findByIdentity(
+        sellerId,
+        'telegram',
+        String(options.channelUserId)
+      );
+      if (!customer || !customer.phone || customer.phone !== customerPhone) {
+        const err = new Error('Share your own phone number in Telegram before placing an order');
+        err.statusCode = 400;
+        throw err;
+      }
+      customer = await customerService.refreshByIdentity(
+        sellerId,
+        'telegram',
+        String(options.channelUserId),
+        {
+          name: customerName,
+          phone: customerPhone,
+          address: customerAddress,
+        }
+      );
+    } else {
+      // Storefront identity continues to use exact phone+email profiles.
+      customer = await customerService.upsert(sellerId, {
+        name: customerName,
+        phone: customerPhone,
+        address: customerAddress,
+        email: customerEmail,
+        shopperId: payload.shopperId || null,
+      });
+    }
 
     // Validate and freeze authoritative prices for each order item
     const validatedItems = [];
@@ -96,7 +120,7 @@ const orderService = {
         throw err;
       }
 
-      // Fetch authoritative product from DB or memory
+      // Fetch authoritative product from the database
       const product = await productService.getById(item.productId, sellerId);
       if (!product) {
         const err = new Error(`Product not found or does not belong to this seller: ${item.productId}`);
@@ -123,10 +147,10 @@ const orderService = {
       subtotal += itemSubtotal;
 
       // Deduct stock from product
-      await productService.adjustStock(product.id || product._id, sellerId, qty, item.variantId);
+      await productService.adjustStock(product.id, sellerId, qty, item.variantId);
 
       validatedItems.push({
-        productId: (product.id || product._id).toString(),
+        productId: product.id.toString(),
         variantId: item.variantId || undefined,
         variantLabel: variantLabel || undefined,
         name: product.name,
@@ -152,118 +176,180 @@ const orderService = {
 
     const total = subtotal + deliveryFee;
 
-    const orderData = {
+    // Automatic checkout always starts unpaid. Neither a public storefront
+    // request nor an AI tool may assert that money was received; only the
+    // Paystack verification path may promote it to Paid. Manually logged orders
+    // use the separate, seller-authenticated manualOrderService.
+    const orderNumber = await nextOrderNumber(sellerId);
+
+    const order = await Order.create({
       sellerId,
       customerId: customer.id,
       customerName,
       customerPhone,
-      customerWhatsappId: customer.whatsappId || customerPhone,
+      customerEmail,
+      source,
+      sourceChannel: '',
+      channel: options.channel || (source === 'telegram' ? 'telegram' : 'storefront'),
+      channelAccountId: options.channelAccountId || '',
+      channelUserId: options.channelUserId || '',
+      channelUsername: options.channelUsername || '',
+      sourceNote: '',
+      enteredBy: '',
+      orderNumber,
       deliveryAddress: customerAddress,
       items: validatedItems,
       subtotal,
       deliveryFee,
       total,
-      paymentStatus: payload.paymentStatus || 'Pending',
+      paymentStatus: 'Pending',
+      paymentMethod: 'paystack',
       orderStatus: 'Pending',
-      paymentReference: payload.paymentReference || '',
+      paymentReference: '',
+      paidAt: null,
       idempotencyKey: idempotencyKey || undefined,
-    };
-
-    if (isDbConnected()) {
-      const order = await Order.create(orderData);
-      await customerService.incrementOnOrder(customer.id, sellerId, total);
-      logger.info('Order created successfully (DB):', { id: order._id.toString(), sellerId, total });
-      const orderJson = order.toJSON();
-      const ns = getNotificationService();
-      if (ns) ns.sendOrderConfirmation(orderJson).catch(() => {});
-      return orderJson;
-    }
-
-    // In-memory fallback
-    const id = 'ord_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const now = new Date().toISOString();
-    const memOrder = {
-      id,
-      _id: id,
-      ...orderData,
-      createdAt: now,
-      updatedAt: now,
-    };
-    memoryOrders.set(id, memOrder);
-
-    if (idempotencyKey) {
-      memoryIdempotency.set(idempotencyKey, id);
-    }
+      shopperId: payload.shopperId || null,
+    });
 
     await customerService.incrementOnOrder(customer.id, sellerId, total);
-    logger.info('Order created successfully (Memory):', { id, sellerId, total });
+    logger.info('Order created successfully:', { id: order._id.toString(), sellerId, total });
+
+    const orderJson = order.toJSON();
     const ns = getNotificationService();
-    if (ns) ns.sendOrderConfirmation(memOrder).catch(() => {});
-    return memOrder;
+    if (ns) ns.sendOrderConfirmation(orderJson).catch(() => {});
+    return orderJson;
   },
 
   /**
    * List orders for a seller with status filtering and search
    */
-  async list(sellerId, { status, paymentStatus, search } = {}) {
+  async list(sellerId, { status, paymentStatus, source, sourceChannel, search, from, to } = {}) {
     if (!sellerId) throw new Error('Seller ID is required');
 
-    if (isDbConnected()) {
-      const filter = { sellerId };
-      if (status) filter.orderStatus = status;
-      if (paymentStatus) filter.paymentStatus = paymentStatus;
-      if (search) {
-        const q = sanitize(search, 100);
-        filter.$or = [
-          { customerName: { $regex: q, $options: 'i' } },
-          { customerPhone: { $regex: q, $options: 'i' } },
-          { 'items.name': { $regex: q, $options: 'i' } },
-        ];
+    const filter = { sellerId };
+    if (status) filter.orderStatus = status;
+    if (paymentStatus) filter.paymentStatus = paymentStatus;
+    if (source === 'automatic') filter.source = { $in: AUTOMATIC_SOURCES };
+    else if (source) filter.source = source;
+    if (sourceChannel) filter.sourceChannel = sourceChannel;
+
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) {
+        const start = new Date(from);
+        if (!Number.isNaN(start.getTime())) filter.createdAt.$gte = start;
       }
-      const orders = await Order.find(filter).sort({ createdAt: -1 });
-      return orders.map((o) => o.toJSON());
+      if (to) {
+        const end = new Date(to);
+        if (!Number.isNaN(end.getTime())) filter.createdAt.$lte = end;
+      }
+      if (Object.keys(filter.createdAt).length === 0) delete filter.createdAt;
     }
 
-    // In-memory fallback
-    let list = Array.from(memoryOrders.values()).filter((o) => o.sellerId === sellerId);
-    if (status) list = list.filter((o) => o.orderStatus === status);
-    if (paymentStatus) list = list.filter((o) => o.paymentStatus === paymentStatus);
     if (search) {
-      const q = sanitize(search, 100).toLowerCase();
-      list = list.filter(
-        (o) =>
-          o.id.toLowerCase().includes(q) ||
-          o.customerName.toLowerCase().includes(q) ||
-          o.customerPhone.includes(q) ||
-          (o.items || []).some((item) => item.name.toLowerCase().includes(q))
-      );
+      const rawSearch = sanitize(search, 100);
+      const q = escapeRegex(rawSearch);
+      const numericReference = Number(rawSearch.replace(/^#/, ''));
+      filter.$or = [
+        { customerName: { $regex: q, $options: 'i' } },
+        { customerPhone: { $regex: q, $options: 'i' } },
+        { 'items.name': { $regex: q, $options: 'i' } },
+        { sourceNote: { $regex: q, $options: 'i' } },
+      ];
+      if (Number.isInteger(numericReference) && numericReference > 0) {
+        filter.$or.push({ orderNumber: numericReference });
+      }
     }
-    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    const orders = await Order.find(filter).sort({ createdAt: -1 });
+    return orders.map((o) => o.toJSON());
+  },
+
+  /**
+   * Dashboard totals and source splits for the seller order-management page.
+   * Revenue means verified/recorded Paid orders, never merely created orders.
+   */
+  async getSummary(sellerId, { from, to } = {}) {
+    if (!sellerId) throw new Error('Seller ID is required');
+
+    const match = { sellerId };
+    if (from || to) {
+      match.createdAt = {};
+      if (from) {
+        const start = new Date(from);
+        if (!Number.isNaN(start.getTime())) match.createdAt.$gte = start;
+      }
+      if (to) {
+        const end = new Date(to);
+        if (!Number.isNaN(end.getTime())) match.createdAt.$lte = end;
+      }
+      if (Object.keys(match.createdAt).length === 0) delete match.createdAt;
+    }
+
+    const [result] = await Order.aggregate([
+      { $match: match },
+      {
+        $facet: {
+          totals: [
+            {
+              $group: {
+                _id: null,
+                orders: { $sum: 1 },
+                grossOrderValue: { $sum: '$total' },
+                paidRevenue: {
+                  $sum: { $cond: [{ $eq: ['$paymentStatus', 'Paid'] }, '$total', 0] },
+                },
+                outstanding: {
+                  $sum: { $cond: [{ $eq: ['$paymentStatus', 'Pending'] }, '$total', 0] },
+                },
+              },
+            },
+          ],
+          bySource: [
+            { $group: { _id: '$source', orders: { $sum: 1 }, value: { $sum: '$total' } } },
+            { $sort: { orders: -1 } },
+          ],
+          byStatus: [
+            { $group: { _id: '$orderStatus', orders: { $sum: 1 } } },
+            { $sort: { orders: -1 } },
+          ],
+          byPaymentStatus: [
+            { $group: { _id: '$paymentStatus', orders: { $sum: 1 }, value: { $sum: '$total' } } },
+            { $sort: { orders: -1 } },
+          ],
+        },
+      },
+    ]);
+
+    const totals = (result && result.totals && result.totals[0]) || {
+      orders: 0,
+      grossOrderValue: 0,
+      paidRevenue: 0,
+      outstanding: 0,
+    };
+    delete totals._id;
+
+    return {
+      totals,
+      bySource: (result && result.bySource) || [],
+      byStatus: (result && result.byStatus) || [],
+      byPaymentStatus: (result && result.byPaymentStatus) || [],
+    };
   },
 
   /**
    * Get single order by ID (tenant isolation enforced)
    */
   async getById(id, sellerId) {
-    if (isDbConnected()) {
-      const query = { _id: id };
-      if (sellerId) query.sellerId = sellerId;
-      const order = await Order.findOne(query);
-      if (!order) {
-        const err = new Error('Order not found');
-        err.statusCode = 404;
-        throw err;
-      }
-      return order.toJSON();
-    }
+    if (!id || !mongoose.isValidObjectId(id)) throw notFound();
 
-    const order = memoryOrders.get(id);
-    if (!order || (sellerId && order.sellerId !== sellerId)) {
-      const err = new Error('Order not found');
-      err.statusCode = 404;
-      throw err;
-    }
-    return order;
+    const query = { _id: id };
+    if (sellerId) query.sellerId = sellerId;
+
+    const order = await Order.findOne(query);
+    if (!order) throw notFound();
+
+    return order.toJSON();
   },
 
   /**
@@ -277,37 +363,25 @@ const orderService = {
       throw err;
     }
 
-    if (isDbConnected()) {
-      const order = await Order.findOneAndUpdate(
-        { _id: id, sellerId },
-        { $set: { orderStatus } },
-        { new: true }
-      );
-      if (!order) {
-        const err = new Error('Order not found');
-        err.statusCode = 404;
-        throw err;
-      }
-      logger.info('Order status updated (DB):', { id, orderStatus });
-      const orderJson = order.toJSON();
+    if (!id || !mongoose.isValidObjectId(id)) throw notFound();
+
+    const order = await Order.findOneAndUpdate(
+      { _id: id, sellerId },
+      { $set: { orderStatus } },
+      { new: true }
+    );
+    if (!order) throw notFound();
+
+    logger.info('Order status updated:', { id, orderStatus });
+    const orderJson = order.toJSON();
+    // Manually logged orders are records of conversations happening elsewhere;
+    // never surprise the merchant by auto-sending through an API channel. They
+    // can explicitly request a copy/share link from GET /:id/share.
+    if (orderJson.source !== 'manual') {
       const ns = getNotificationService();
       if (ns) ns.sendOrderStatusUpdate(orderJson, orderStatus).catch(() => {});
-      return orderJson;
     }
-
-    const order = memoryOrders.get(id);
-    if (!order || order.sellerId !== sellerId) {
-      const err = new Error('Order not found');
-      err.statusCode = 404;
-      throw err;
-    }
-    order.orderStatus = orderStatus;
-    order.updatedAt = new Date().toISOString();
-    memoryOrders.set(id, order);
-    logger.info('Order status updated (Memory):', { id, orderStatus });
-    const ns = getNotificationService();
-    if (ns) ns.sendOrderStatusUpdate(order, orderStatus).catch(() => {});
-    return order;
+    return orderJson;
   },
 
   /**
@@ -321,28 +395,20 @@ const orderService = {
       throw err;
     }
 
+    if (!id || !mongoose.isValidObjectId(id)) throw notFound();
+
     const updates = { paymentStatus };
+    if (paymentStatus === 'Paid') updates.paidAt = new Date();
+    else if (paymentStatus === 'Pending' || paymentStatus === 'Failed') updates.paidAt = null;
     if (paymentReference) updates.paymentReference = paymentReference;
 
-    if (isDbConnected()) {
-      const query = { _id: id };
-      if (sellerId) query.sellerId = sellerId;
-      const order = await Order.findOneAndUpdate(query, { $set: updates }, { new: true });
-      if (!order) throw new Error('Order not found');
-      return order.toJSON();
-    }
+    const query = { _id: id };
+    if (sellerId) query.sellerId = sellerId;
 
-    const order = memoryOrders.get(id);
-    if (!order || (sellerId && order.sellerId !== sellerId)) throw new Error('Order not found');
-    order.paymentStatus = paymentStatus;
-    if (paymentReference) order.paymentReference = paymentReference;
-    order.updatedAt = new Date().toISOString();
-    memoryOrders.set(id, order);
-    return order;
-  },
+    const order = await Order.findOneAndUpdate(query, { $set: updates }, { new: true });
+    if (!order) throw notFound();
 
-  getMemoryStore() {
-    return memoryOrders;
+    return order.toJSON();
   },
 };
 

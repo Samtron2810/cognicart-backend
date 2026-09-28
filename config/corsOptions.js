@@ -39,7 +39,6 @@ const corsOptions = {
     'Content-Type',
     'Authorization',
     'X-Idempotency-Key',
-    'X-Hub-Signature-256',
     'X-Paystack-Signature',
     'X-Requested-With',
   ],

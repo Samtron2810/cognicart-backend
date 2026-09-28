@@ -3,15 +3,17 @@
  * Returns platform liveness, readiness, uptime, memory stats, and database connection status
  */
 
-const { isDbConnected } = require('../config/db');
+const { isDbConnected, getDbState } = require('../config/db');
 
 function getHealthStatus(req, res) {
-  res.status(200).json({
-    success: true,
-    status: 'healthy',
+  const connected = isDbConnected();
+
+  res.status(connected ? 200 : 503).json({
+    success: connected,
+    status: connected ? 'healthy' : 'degraded',
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
-    database: isDbConnected() ? 'connected' : 'disconnected',
+    database: getDbState(),
     environment: process.env.NODE_ENV || 'development',
   });
 }
@@ -26,14 +28,14 @@ function getLiveness(req, res) {
 
 function getReadiness(req, res) {
   const mem = process.memoryUsage();
-  const dbStatus = isDbConnected() ? 'connected' : 'in-memory-fallback';
+  const connected = isDbConnected();
 
-  res.status(200).json({
-    status: 'ready',
+  res.status(connected ? 200 : 503).json({
+    status: connected ? 'ready' : 'not-ready',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     checks: {
-      database: dbStatus,
+      database: getDbState(),
       environment: process.env.NODE_ENV || 'development',
       memory: {
         heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),

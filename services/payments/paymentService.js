@@ -4,9 +4,7 @@
  */
 
 const Payment = require('../../models/Payment');
-const Order = require('../../models/Order');
 const PlatformConfig = require('../../models/PlatformConfig');
-const { isDbConnected } = require('../../config/db');
 const orderService = require('../orders/orderService');
 const logger = require('../../utils/logger');
 
@@ -17,14 +15,6 @@ function getNotificationService() {
     return null;
   }
 }
-
-// In-Memory store for development/testing when MongoDB daemon is not running
-const memoryPayments = new Map();
-const memoryIdempotency = new Map();
-let memoryFeeConfig = {
-  percentage: Number(process.env.PLATFORM_FEE_PERCENTAGE) || 5,
-  fixed: Number(process.env.PLATFORM_FEE_FIXED) || 0,
-};
 
 function genReference() {
   return 'PSK_' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -41,18 +31,15 @@ const paymentService = {
    * Get current platform fee configuration
    */
   async getFeeConfig() {
-    if (isDbConnected()) {
-      let cfg = await PlatformConfig.findOne({ key: 'platform_fee' });
-      if (!cfg) {
-        cfg = await PlatformConfig.create({
-          key: 'platform_fee',
-          percentage: Number(process.env.PLATFORM_FEE_PERCENTAGE) || 5,
-          fixed: Number(process.env.PLATFORM_FEE_FIXED) || 0,
-        });
-      }
-      return { percentage: cfg.percentage, fixed: cfg.fixed };
+    let cfg = await PlatformConfig.findOne({ key: 'platform_fee' });
+    if (!cfg) {
+      cfg = await PlatformConfig.create({
+        key: 'platform_fee',
+        percentage: Number(process.env.PLATFORM_FEE_PERCENTAGE) || 5,
+        fixed: Number(process.env.PLATFORM_FEE_FIXED) || 0,
+      });
     }
-    return memoryFeeConfig;
+    return { percentage: cfg.percentage, fixed: cfg.fixed };
   },
 
   /**
@@ -63,17 +50,13 @@ const paymentService = {
     if (percentage !== undefined && !isNaN(Number(percentage))) update.percentage = Number(percentage);
     if (fixed !== undefined && !isNaN(Number(fixed))) update.fixed = Number(fixed);
 
-    if (isDbConnected()) {
-      const cfg = await PlatformConfig.findOneAndUpdate(
-        { key: 'platform_fee' },
-        { $set: update },
-        { new: true, upsert: true }
-      );
-      return { percentage: cfg.percentage, fixed: cfg.fixed };
-    }
+    const cfg = await PlatformConfig.findOneAndUpdate(
+      { key: 'platform_fee' },
+      { $set: update },
+      { new: true, upsert: true, setDefaultsOnInsert: true }
+    );
 
-    memoryFeeConfig = { ...memoryFeeConfig, ...update };
-    return memoryFeeConfig;
+    return { percentage: cfg.percentage, fixed: cfg.fixed };
   },
 
   /**
@@ -93,43 +76,35 @@ const paymentService = {
     }
 
     const amount = Number(payload.amount);
-    const email = (payload.email || '').trim().toLowerCase() || `customer_${payload.orderId.slice(-6)}@wabac.ng`;
+    const email = (payload.email || '').trim().toLowerCase() || `customer_${String(payload.orderId).slice(-6)}@wabac.ng`;
 
     // Idempotency check
     if (idempotencyKey) {
-      if (isDbConnected()) {
-        const existingTx = await Payment.findOne({ idempotencyKey });
-        if (existingTx) {
-          logger.info('Payment initialize idempotency hit (DB):', { idempotencyKey, reference: existingTx.reference });
-          return {
-            reference: existingTx.reference,
-            authorization_url: `https://checkout.paystack.com/${existingTx.reference}`,
-            transaction: existingTx.toJSON(),
-          };
-        }
-      } else {
-        const cachedRef = memoryIdempotency.get(idempotencyKey);
-        if (cachedRef && memoryPayments.has(cachedRef)) {
-          const t = memoryPayments.get(cachedRef);
-          logger.info('Payment initialize idempotency hit (Memory):', { idempotencyKey, reference: t.reference });
-          return {
-            reference: t.reference,
-            authorization_url: `https://checkout.paystack.com/${t.reference}`,
-            transaction: t,
-          };
-        }
+      const existingTx = await Payment.findOne({ idempotencyKey });
+      if (existingTx) {
+        logger.info('Payment initialize idempotency hit:', { idempotencyKey, reference: existingTx.reference });
+        return {
+          reference: existingTx.reference,
+          authorization_url: `https://checkout.paystack.com/${existingTx.reference}`,
+          transaction: existingTx.toJSON(),
+        };
       }
     }
 
-    // Determine sellerId from payload or order
-    let sellerId = payload.sellerId;
+    // Resolve the owning seller from the order (never guess/default it)
     let order = null;
     try {
-      order = await orderService.getById(payload.orderId, sellerId);
-      if (order && !sellerId) sellerId = order.sellerId;
-    } catch {}
+      order = await orderService.getById(payload.orderId, payload.sellerId);
+    } catch (err) {
+      logger.warn('Payment initialization could not load order:', { orderId: payload.orderId, error: err.message });
+    }
 
-    if (!sellerId) sellerId = 'seller_admin';
+    const sellerId = payload.sellerId || (order && order.sellerId);
+    if (!sellerId) {
+      const err = new Error('Order not found: a payment must belong to an existing order and seller');
+      err.statusCode = 404;
+      throw err;
+    }
 
     // Calculate revenue splits
     const feeCfg = await this.getFeeConfig();
@@ -162,11 +137,11 @@ const paymentService = {
           authorization_url = psData.data.authorization_url;
         }
       } catch (err) {
-        logger.warn('Paystack API call failed, falling back to mock link:', { error: err.message });
+        logger.warn('Paystack API call failed, falling back to hosted checkout link:', { error: err.message });
       }
     }
 
-    const txData = {
+    const payment = await Payment.create({
       sellerId,
       orderId: payload.orderId,
       amount,
@@ -181,145 +156,80 @@ const paymentService = {
       status: 'pending',
       channel: 'paystack',
       idempotencyKey: idempotencyKey || undefined,
-    };
+    });
 
-    if (isDbConnected()) {
-      const payment = await Payment.create(txData);
-      return {
-        reference,
-        authorization_url,
-        transaction: payment.toJSON(),
-      };
-    }
-
-    // In-memory fallback
-    const id = 'txn_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const now = new Date().toISOString();
-    const memTx = {
-      id,
-      _id: id,
-      ...txData,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    memoryPayments.set(reference, memTx);
-    if (idempotencyKey) memoryIdempotency.set(idempotencyKey, reference);
-
-    logger.info('Payment initialized (Memory):', { orderId: payload.orderId, reference, amount });
+    logger.info('Payment initialized:', { orderId: payload.orderId, reference, amount });
     return {
       reference,
       authorization_url,
-      transaction: memTx,
+      transaction: payment.toJSON(),
     };
   },
 
   /**
    * Verify a transaction and reconcile the order to Paid
    */
-  async verify(reference, signature = 'mock') {
+  async verify(reference) {
     if (!reference) {
       const err = new Error('Payment reference is required');
       err.statusCode = 400;
       throw err;
     }
 
-    let transaction = null;
-
-    if (isDbConnected()) {
-      transaction = await Payment.findOne({ reference });
-      if (!transaction) {
-        const err = new Error('Transaction not found');
-        err.statusCode = 404;
-        throw err;
-      }
-
-      if (transaction.status === 'success') {
-        return transaction.toJSON();
-      }
-
-      // Mark transaction verified
-      transaction.status = 'success';
-      transaction.verifiedAt = new Date();
-      await transaction.save();
-
-      // Automatically reconcile corresponding order
-      let recOrder = null;
-      try {
-        recOrder = await orderService.updatePaymentStatus(transaction.orderId, transaction.sellerId, 'Paid', reference);
-      } catch (err) {
-        logger.warn('Order reconciliation error during payment verification:', { error: err.message });
-      }
-
-      logger.info('Payment verified & order reconciled (DB):', { reference, orderId: transaction.orderId });
-      const ns = getNotificationService();
-      if (ns) ns.sendPaymentReceipt(transaction.toJSON(), recOrder).catch(() => {});
-      return transaction.toJSON();
-    }
-
-    // In-memory fallback
-    transaction = memoryPayments.get(reference);
+    const transaction = await Payment.findOne({ reference });
     if (!transaction) {
       const err = new Error('Transaction not found');
       err.statusCode = 404;
       throw err;
     }
 
-    transaction.status = 'success';
-    transaction.verifiedAt = new Date().toISOString();
-    transaction.updatedAt = transaction.verifiedAt;
-    memoryPayments.set(reference, transaction);
-
-    let memRecOrder = null;
-    try {
-      memRecOrder = await orderService.updatePaymentStatus(transaction.orderId, transaction.sellerId, 'Paid', reference);
-    } catch (err) {
-      logger.warn('Order reconciliation error (Memory):', { error: err.message });
+    if (transaction.status === 'success') {
+      return transaction.toJSON();
     }
 
-    logger.info('Payment verified & order reconciled (Memory):', { reference, orderId: transaction.orderId });
-    const nsMem = getNotificationService();
-    if (nsMem) nsMem.sendPaymentReceipt(transaction, memRecOrder).catch(() => {});
-    return transaction;
+    // Mark transaction verified
+    transaction.status = 'success';
+    transaction.verifiedAt = new Date();
+    await transaction.save();
+
+    // Automatically reconcile corresponding order
+    let recOrder = null;
+    try {
+      recOrder = await orderService.updatePaymentStatus(transaction.orderId, transaction.sellerId, 'Paid', reference);
+    } catch (err) {
+      logger.warn('Order reconciliation error during payment verification:', { error: err.message });
+    }
+
+    logger.info('Payment verified & order reconciled:', { reference, orderId: transaction.orderId });
+    const ns = getNotificationService();
+    if (ns) ns.sendPaymentReceipt(transaction.toJSON(), recOrder).catch(() => {});
+    return transaction.toJSON();
   },
 
   /**
    * Get transaction by reference
    */
   async getByReference(reference) {
-    if (isDbConnected()) {
-      const tx = await Payment.findOne({ reference });
-      return tx ? tx.toJSON() : null;
-    }
-    return memoryPayments.get(reference) || null;
+    if (!reference) return null;
+    const tx = await Payment.findOne({ reference });
+    return tx ? tx.toJSON() : null;
   },
 
   /**
    * List transactions for a specific seller
    */
   async list(sellerId) {
-    if (isDbConnected()) {
-      const list = await Payment.find({ sellerId }).sort({ createdAt: -1 });
-      return list.map((t) => t.toJSON());
-    }
-    const list = Array.from(memoryPayments.values()).filter((t) => t.sellerId === sellerId);
-    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    if (!sellerId) throw new Error('Seller ID is required');
+    const list = await Payment.find({ sellerId }).sort({ createdAt: -1 });
+    return list.map((t) => t.toJSON());
   },
 
   /**
    * List all platform transactions (Admin)
    */
   async listAll() {
-    if (isDbConnected()) {
-      const list = await Payment.find().sort({ createdAt: -1 });
-      return list.map((t) => t.toJSON());
-    }
-    const list = Array.from(memoryPayments.values());
-    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  },
-
-  getMemoryStore() {
-    return memoryPayments;
+    const list = await Payment.find().sort({ createdAt: -1 });
+    return list.map((t) => t.toJSON());
   },
 };
 

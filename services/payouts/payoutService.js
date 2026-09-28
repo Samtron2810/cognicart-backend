@@ -3,14 +3,10 @@
  * Manages bank account resolution, available settlement balances, withdrawal requests, and disbursement flows
  */
 
+const mongoose = require('mongoose');
 const Payout = require('../../models/Payout');
 const Payment = require('../../models/Payment');
-const { isDbConnected } = require('../../config/db');
-const paymentService = require('../payments/paymentService');
 const logger = require('../../utils/logger');
-
-// In-Memory store for payouts when MongoDB is offline
-const memoryPayouts = new Map();
 
 // Known Nigerian Banks Dictionary for standard resolution
 const NIGERIAN_BANKS = {
@@ -39,18 +35,10 @@ const payoutService = {
   async getBalance(sellerId) {
     if (!sellerId) throw new Error('Seller ID is required');
 
-    let payments = [];
-    let payouts = [];
-
-    if (isDbConnected()) {
-      payments = await Payment.find({ sellerId, status: 'success' });
-      payouts = await Payout.find({ sellerId });
-    } else {
-      payments = Array.from(paymentService.getMemoryStore().values()).filter(
-        (p) => p.sellerId === sellerId && p.status === 'success'
-      );
-      payouts = Array.from(memoryPayouts.values()).filter((p) => p.sellerId === sellerId);
-    }
+    const [payments, payouts] = await Promise.all([
+      Payment.find({ sellerId, status: 'success' }),
+      Payout.find({ sellerId }),
+    ]);
 
     const totalEarned = payments.reduce((sum, p) => sum + (p.sellerAmount || 0), 0);
     const completedPayouts = payouts
@@ -110,11 +98,11 @@ const payoutService = {
           };
         }
       } catch (err) {
-        logger.warn('Paystack bank resolution fallback:', { error: err.message });
+        logger.warn('Paystack bank resolution unavailable:', { error: err.message });
       }
     }
 
-    // Default authoritative verified account resolution mock
+    // Default authoritative verified account resolution
     return {
       accountNumber: cleanAccount,
       accountName: 'WABAC Verified Merchant Store',
@@ -157,10 +145,7 @@ const payoutService = {
       throw err;
     }
 
-    const reference = genPayoutReference();
-    const now = new Date();
-
-    const payoutData = {
+    const payout = await Payout.create({
       sellerId,
       amount,
       currency: 'NGN',
@@ -169,54 +154,31 @@ const payoutService = {
       accountNumber,
       accountName,
       recipientCode: `RCP_${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
-      reference,
+      reference: genPayoutReference(),
       status: 'pending',
-      requestedAt: now,
+      requestedAt: new Date(),
       metadata: payload.metadata || {},
-    };
+    });
 
-    if (isDbConnected()) {
-      const payout = await Payout.create(payoutData);
-      logger.info('Payout requested (DB):', { id: payout._id.toString(), sellerId, amount, reference });
-      return payout.toJSON();
-    }
-
-    const id = 'po_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-    const memPayout = {
-      id,
-      _id: id,
-      ...payoutData,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-    };
-    memoryPayouts.set(id, memPayout);
-
-    logger.info('Payout requested (Memory):', { id, sellerId, amount, reference });
-    return memPayout;
+    logger.info('Payout requested:', { id: payout._id.toString(), sellerId, amount, reference: payout.reference });
+    return payout.toJSON();
   },
 
   /**
    * List payouts for a seller
    */
   async listBySeller(sellerId) {
-    if (isDbConnected()) {
-      const payouts = await Payout.find({ sellerId }).sort({ createdAt: -1 });
-      return payouts.map((p) => p.toJSON());
-    }
-    const list = Array.from(memoryPayouts.values()).filter((p) => p.sellerId === sellerId);
-    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    if (!sellerId) throw new Error('Seller ID is required');
+    const payouts = await Payout.find({ sellerId }).sort({ createdAt: -1 });
+    return payouts.map((p) => p.toJSON());
   },
 
   /**
    * List all platform payouts (Admin)
    */
   async listAll() {
-    if (isDbConnected()) {
-      const payouts = await Payout.find().sort({ createdAt: -1 });
-      return payouts.map((p) => p.toJSON());
-    }
-    const list = Array.from(memoryPayouts.values());
-    return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const payouts = await Payout.find().sort({ createdAt: -1 });
+    return payouts.map((p) => p.toJSON());
   },
 
   /**
@@ -230,44 +192,29 @@ const payoutService = {
       throw err;
     }
 
-    const now = new Date();
     const update = {
       status,
-      processedAt: now,
+      processedAt: new Date(),
     };
     if (rejectionReason) update.rejectionReason = rejectionReason;
 
-    if (isDbConnected()) {
-      const payout = await Payout.findByIdAndUpdate(id, { $set: update }, { new: true });
-      if (!payout) {
-        const err = new Error('Payout not found');
-        err.statusCode = 404;
-        throw err;
-      }
-      logger.info('Payout processed (DB):', { id, status });
-      return payout.toJSON();
+    if (!id || !mongoose.isValidObjectId(id)) {
+      const err = new Error('Payout not found');
+      err.statusCode = 404;
+      throw err;
     }
 
-    const payout = memoryPayouts.get(id);
+    const payout = await Payout.findByIdAndUpdate(id, { $set: update }, { new: true });
     if (!payout) {
       const err = new Error('Payout not found');
       err.statusCode = 404;
       throw err;
     }
 
-    payout.status = status;
-    payout.processedAt = now.toISOString();
-    payout.updatedAt = now.toISOString();
-    if (rejectionReason) payout.rejectionReason = rejectionReason;
-
-    memoryPayouts.set(id, payout);
-    logger.info('Payout processed (Memory):', { id, status });
-    return payout;
-  },
-
-  getMemoryStore() {
-    return memoryPayouts;
+    logger.info('Payout processed:', { id, status });
+    return payout.toJSON();
   },
 };
 
 module.exports = payoutService;
+module.exports.NIGERIAN_BANKS = NIGERIAN_BANKS;

@@ -1,5 +1,5 @@
 /**
- * WhatsApp Marketing Campaigns and Re-engagement Routes
+ * Telegram Marketing Campaigns and Re-engagement Routes
  */
 
 const express = require('express');

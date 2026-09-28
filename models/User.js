@@ -1,5 +1,5 @@
 /**
- * User / Seller Mongoose Model with In-Memory Resilience Fallback
+ * User / Seller Mongoose Model
  */
 
 const mongoose = require('mongoose');
@@ -59,11 +59,12 @@ const userSchema = new mongoose.Schema(
 );
 
 // Hash password before saving to MongoDB
-userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
+// NOTE: Mongoose 9 removed the `next` callback from pre middleware.
+// Hooks must be async functions (or return a promise) instead.
+userSchema.pre('save', async function hashPassword() {
+  if (!this.isModified('password')) return;
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
-  next();
 });
 
 // Compare password method

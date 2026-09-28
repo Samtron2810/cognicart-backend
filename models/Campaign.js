@@ -8,7 +8,10 @@ const mongoose = require('mongoose');
 const recipientSchema = new mongoose.Schema(
   {
     customerId: { type: String },
-    phone: { type: String, required: true },
+    channel: { type: String, enum: ['telegram'], default: 'telegram' },
+    channelUserId: { type: String, default: '' },
+    handle: { type: String, default: '' },
+    phone: { type: String, default: '' },
     name: { type: String, default: '' },
     status: {
       type: String,
@@ -39,6 +42,12 @@ const campaignSchema = new mongoose.Schema(
       required: [true, 'Campaign message content is required'],
       trim: true,
       maxlength: [2000, 'Message cannot exceed 2000 characters'],
+    },
+    channel: {
+      type: String,
+      enum: ['telegram'],
+      default: 'telegram',
+      index: true,
     },
     segment: {
       type: String,

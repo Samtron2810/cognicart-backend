@@ -10,58 +10,33 @@ const Customer = require('../models/Customer');
 const Message = require('../models/Message');
 const Payment = require('../models/Payment');
 const Business = require('../models/Business');
-const { isDbConnected } = require('../config/db');
-const authService = require('../services/auth/authService');
-const productService = require('../services/products/productService');
-const orderService = require('../services/orders/orderService');
-const customerService = require('../services/customers/customerService');
-const messageService = require('../services/whatsapp/messageService');
+const mongoose = require('mongoose');
 const paymentService = require('../services/payments/paymentService');
 const payoutService = require('../services/payouts/payoutService');
 const logger = require('../utils/logger');
 
 /**
- * Fetch all platform entities across DB or memory
+ * Fetch all platform entities from the database
  */
 async function getAllPlatformEntities() {
-  if (isDbConnected()) {
-    const [sellers, products, orders, customers, messages, transactions, businesses] = await Promise.all([
-      User.find().sort({ createdAt: -1 }),
-      Product.find().sort({ createdAt: -1 }),
-      Order.find().sort({ createdAt: -1 }),
-      Customer.find().sort({ createdAt: -1 }),
-      Message.find().sort({ timestamp: -1 }),
-      Payment.find().sort({ createdAt: -1 }),
-      Business.find(),
-    ]);
-
-    return {
-      sellers: sellers.map((s) => s.toJSON()),
-      products: products.map((p) => p.toJSON()),
-      orders: orders.map((o) => o.toJSON()),
-      customers: customers.map((c) => c.toJSON()),
-      messages: messages.map((m) => m.toJSON()),
-      transactions: transactions.map((t) => t.toJSON()),
-      businesses: businesses.map((b) => b.toJSON()),
-    };
-  }
-
-  // Memory fallback
-  const { users, businesses: memBiz } = authService.getMemoryStore();
-  const memProducts = productService.getMemoryStore();
-  const memOrders = orderService.getMemoryStore();
-  const memCustomers = customerService.getMemoryStore();
-  const { messages: memMsgs } = messageService.getMemoryStore();
-  const memPayments = paymentService.getMemoryStore();
+  const [sellers, products, orders, customers, messages, transactions, businesses] = await Promise.all([
+    User.find().sort({ createdAt: -1 }),
+    Product.find().sort({ createdAt: -1 }),
+    Order.find().sort({ createdAt: -1 }),
+    Customer.find().sort({ createdAt: -1 }),
+    Message.find().sort({ timestamp: -1 }),
+    Payment.find().sort({ createdAt: -1 }),
+    Business.find(),
+  ]);
 
   return {
-    sellers: Array.from(users.values()).map(({ password: _p, ...u }) => u),
-    products: Array.from(memProducts.values()),
-    orders: Array.from(memOrders.values()),
-    customers: Array.from(memCustomers.values()),
-    messages: memMsgs,
-    transactions: Array.from(memPayments.values()),
-    businesses: Array.from(memBiz.values()),
+    sellers: sellers.map((s) => s.toJSON()),
+    products: products.map((p) => p.toJSON()),
+    orders: orders.map((o) => o.toJSON()),
+    customers: customers.map((c) => c.toJSON()),
+    messages: messages.map((m) => m.toJSON()),
+    transactions: transactions.map((t) => t.toJSON()),
+    businesses: businesses.map((b) => b.toJSON()),
   };
 }
 
@@ -146,7 +121,7 @@ const adminController = {
           customersCount: sCustomers.length,
           messagesCount: sMessages.length,
           revenue,
-          whatsappConnected: !!(business && business.whatsappConnected),
+          telegramConnected: !!(business && business.telegramConnected),
         };
       });
 
@@ -206,27 +181,17 @@ const adminController = {
 
       const activeBool = isActive === true || isActive === 'true';
 
-      if (isDbConnected()) {
-        const user = await User.findByIdAndUpdate(id, { $set: { isActive: activeBool } }, { new: true });
-        if (!user) {
-          return res.status(404).json({ success: false, message: 'Seller not found' });
-        }
-        return res.status(200).json(user.toJSON());
+      if (!mongoose.isValidObjectId(id)) {
+        return res.status(404).json({ success: false, message: 'Seller not found' });
       }
 
-      const { users } = authService.getMemoryStore();
-      const user = users.get(id);
+      const user = await User.findByIdAndUpdate(id, { $set: { isActive: activeBool } }, { new: true });
       if (!user) {
         return res.status(404).json({ success: false, message: 'Seller not found' });
       }
 
-      user.isActive = activeBool;
-      user.updatedAt = new Date().toISOString();
-      users.set(id, user);
-
-      const { password: _p, ...sanitized } = user;
       logger.info('Seller active status toggled (Admin):', { id, isActive: activeBool });
-      res.status(200).json(sanitized);
+      res.status(200).json(user.toJSON());
     } catch (error) {
       next(error);
     }
@@ -309,24 +274,24 @@ const adminController = {
   },
 
   /**
-   * @route   GET /api/admin/whatsapp
-   * @desc    Platform-wide WhatsApp messaging and AI interaction metrics
+   * @route   GET /api/admin/telegram
+   * @desc    Platform-wide Telegram messaging and AI interaction metrics
    * @access  Private (Admin / Platform Owner)
    */
-  async getWhatsAppStats(req, res, next) {
+  async getTelegramStats(req, res, next) {
     try {
       const { sellers, messages, businesses } = await getAllPlatformEntities();
 
       const stats = sellers.map((s) => {
-        const sMessages = messages.filter((m) => m.sellerId === s.id);
+        const sMessages = messages.filter((m) => m.sellerId === s.id && m.channel === 'telegram');
         const business = businesses.find((b) => b.sellerId === s.id);
 
         return {
           sellerId: s.id,
           businessName: s.businessName,
           email: s.email,
-          businessPhone: (business && business.whatsappPhone) || '—',
-          whatsappConnected: !!(business && business.whatsappConnected),
+          botUsername: (business && business.telegramBotUsername) || '',
+          telegramConnected: !!(business && business.telegramConnected),
           totalMessages: sMessages.length,
           inbound: sMessages.filter((m) => m.direction === 'inbound').length,
           outbound: sMessages.filter((m) => m.direction === 'outbound').length,

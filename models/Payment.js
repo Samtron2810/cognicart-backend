@@ -54,8 +54,7 @@ const paymentSchema = new mongoose.Schema(
     reference: {
       type: String,
       required: true,
-      unique: true,
-      index: true,
+      unique: true, // `unique` already builds the index
     },
     email: {
       type: String,

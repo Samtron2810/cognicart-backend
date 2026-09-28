@@ -13,8 +13,9 @@ function containsNoSqlInjection(obj) {
     if (key.startsWith('$')) {
       return true;
     }
-    // Allow standard Meta webhook parameters (hub.mode, hub.challenge, hub.verify_token)
-    if (key.includes('.') && !key.startsWith('hub.')) {
+    // Dotted keys can traverse nested MongoDB fields and are never accepted
+    // directly from request payloads.
+    if (key.includes('.')) {
       return true;
     }
     const val = obj[key];
