@@ -343,7 +343,25 @@ const telegramService = {
           handle: username,
           displayName: name,
         });
-        reply = 'Phone number saved. You can now place orders securely in this chat. What would you like to buy?';
+        const resumed = await aiService.resumeAfterContact({
+          sellerId,
+          customerPhone: customer.phone,
+          customerName: name,
+          customerEmail: customer.email || '',
+          channel: 'telegram',
+          channelAccountId: botId,
+          channelUserId: userId,
+          channelUsername: username,
+          conversationKey: `telegram:${userId}`,
+        });
+        if (resumed) {
+          reply = `Phone number saved securely.\n\n${resumed.reply}`;
+          toolCalls = resumed.toolCalls;
+        } else {
+          reply = 'Phone number saved. You can now place orders securely in this chat. What would you like to buy?';
+        }
+        // Remove the one-time contact keyboard. The resumed summary also tells
+        // the buyer they can reply YES, so an inline keyboard is not required.
         replyMarkup = removeKeyboard();
       }
     } else if (command === '/start') {
@@ -358,10 +376,11 @@ const telegramService = {
       reply = 'Ask me to find a product, check stock, calculate an order, or show an existing order. Use /stop to leave marketing broadcasts.';
       replyMarkup = customer.phone ? undefined : contactKeyboard();
     } else {
-      deterministic = false;
       const aiResult = await aiService.chat({
         sellerId,
         customerPhone: customer.phone || 'telegram_customer',
+        customerName: name,
+        customerEmail: customer.email || '',
         body: parsed.body,
         history,
         channel: 'telegram',
@@ -372,8 +391,12 @@ const telegramService = {
       });
       reply = aiResult.reply;
       toolCalls = aiResult.toolCalls;
-      if (!customer.phone) {
-        reply = `${reply}\n\nTo place an order, tap “Share phone number” below.`;
+      deterministic = aiResult.intent !== 'ai_completion';
+      replyMarkup = aiResult.replyMarkup;
+      if (!customer.phone && (aiResult.needsContact || aiResult.intent === 'ai_completion')) {
+        if (!reply.toLowerCase().includes('share phone number')) {
+          reply = `${reply}\n\nTo place an order, tap “Share phone number” below.`;
+        }
         replyMarkup = contactKeyboard();
       }
     }

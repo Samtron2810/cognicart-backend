@@ -44,7 +44,8 @@ The system architecture is implemented across modular phases following domain-dr
   - `createOrder`: Safe order creation with customer details and line items.
   - `getOrder`: Real-time order status tracking.
   - `createPayment`: Paystack link generation for confirmed orders.
-- **Orchestration**: `services/ai/aiService.js` with iterative tool execution loop and deterministic fallback agent when API keys are absent.
+- **Orchestration**: `services/ai/aiService.js` uses the OpenAI tool loop when configured. Without an API key, `services/ai/deterministicAgent.js` runs a durable state machine for ranked product discovery, product/variant choice, quantity, address, verified contact, confirmation, order creation, and payment handoff.
+- **Durable Sessions**: Deterministic drafts are tenant-scoped, stored under opaque keys in MongoDB, and expire after 24 hours instead of disappearing on a process restart.
 - **AI Chat Endpoint**: `POST /api/ai/chat`.
 
 ### Phase 7: Paystack Payments & Automated Reconciliation

@@ -45,6 +45,8 @@ function comparablePhone(value) {
 function buildToolContext({
   sellerId,
   customerPhone,
+  customerName = '',
+  customerEmail = '',
   shopperId = null,
   channel = '',
   channelAccountId = '',
@@ -55,6 +57,8 @@ function buildToolContext({
   return {
     sellerId,
     customerPhone: customerPhone || '',
+    customerName,
+    customerEmail,
     shopperId,
     channel,
     channelAccountId: String(channelAccountId || ''),

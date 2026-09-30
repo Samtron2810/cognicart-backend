@@ -31,6 +31,8 @@ router.post('/chat', optionalAuth, optionalShopper, async (req, res, next) => {
     const result = await aiService.chat({
       sellerId,
       customerPhone,
+      customerName: (req.shopper && req.shopper.name) || req.body.customerName || '',
+      customerEmail: (req.shopper && req.shopper.email) || req.body.customerEmail || '',
       body,
       history,
       shopperId: req.shopperId || null,
