@@ -85,6 +85,13 @@ const productSchema = new mongoose.Schema(
       type: [variantSchema],
       default: [],
     },
+    // Durable idempotency keys for inventory corrections such as cancellation
+    // restoration. Hidden because this is operational bookkeeping, not catalog data.
+    stockAdjustmentKeys: {
+      type: [String],
+      default: [],
+      select: false,
+    },
   },
   {
     timestamps: true,
@@ -94,6 +101,7 @@ const productSchema = new mongoose.Schema(
         ret.id = ret._id ? ret._id.toString() : ret.id;
         delete ret._id;
         delete ret.__v;
+        delete ret.stockAdjustmentKeys;
         return ret;
       },
     },

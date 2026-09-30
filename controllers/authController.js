@@ -4,6 +4,10 @@
  */
 
 const authService = require('../services/auth/authService');
+const {
+  sellerSessionCookieOptions,
+  clearSessionCookieOptions,
+} = require('../utils/sessionCookie');
 
 /**
  * @route   POST /api/auth/register
@@ -17,13 +21,9 @@ async function register(req, res, next) {
     const { businessName, email, password, phone } = req.body;
     const result = await authService.register({ businessName, email, password, phone });
 
-    // Set secure cookie
-    res.cookie('token', result.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
+    // The httpOnly cookie survives application remounts and responsive view
+    // changes; production allows credentialed requests from the storefront.
+    res.cookie('token', result.token, sellerSessionCookieOptions());
 
     res.status(201).json(result);
   } catch (error) {
@@ -41,12 +41,7 @@ async function login(req, res, next) {
     const { email, password } = req.body;
     const result = await authService.login({ email, password });
 
-    res.cookie('token', result.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    res.cookie('token', result.token, sellerSessionCookieOptions());
 
     res.status(200).json(result);
   } catch (error) {
@@ -74,10 +69,8 @@ async function getMe(req, res, next) {
  * @access  Public
  */
 function logout(req, res) {
-  res.cookie('token', '', {
-    httpOnly: true,
-    expires: new Date(0),
-  });
+  // Clearing must use the same host/path/security attributes as issuance.
+  res.clearCookie('token', clearSessionCookieOptions());
 
   res.status(200).json({
     success: true,

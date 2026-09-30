@@ -4,7 +4,7 @@
   "description": "Telegram and storefront AI commerce backend",
   "main": "server.js",
   "scripts": {
-    "test": "npm run check-env && node tests/phase1.test.js && node tests/phase2.test.js && node tests/phase3.test.js && node tests/phase4.test.js && node tests/phase5.test.js && node tests/phase6.test.js && node tests/phase7.test.js && node tests/phase8.test.js && node tests/phase9.test.js && node tests/phase10.test.js && node tests/phase11.test.js && node tests/phase12.test.js && node tests/phase13.test.js && node tests/phase14.test.js && node tests/phase15.test.js && node tests/phase16.test.js && node tests/phase17.test.js && node tests/phase18.test.js",
+    "test": "npm run check-env && node tests/phase1.test.js && node tests/phase2.test.js && node tests/phase3.test.js && node tests/phase4.test.js && node tests/phase5.test.js && node tests/phase6.test.js && node tests/phase7.test.js && node tests/phase8.test.js && node tests/phase9.test.js && node tests/phase10.test.js && node tests/phase11.test.js && node tests/phase12.test.js && node tests/phase13.test.js && node tests/phase14.test.js && node tests/phase15.test.js && node tests/phase16.test.js && node tests/phase17.test.js && node tests/phase18.test.js && node tests/phase19.test.js && node tests/phase20.test.js",
     "dev": "nodemon server.js",
     "start": "node server.js",
     "create-admin": "node scripts/createAdmin.js",

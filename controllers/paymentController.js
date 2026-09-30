@@ -46,6 +46,29 @@ async function verifyPayment(req, res, next) {
 }
 
 /**
+ * Browser return target used by both storefront and Telegram hosted checkout.
+ * Verification happens server-to-server before the buyer is redirected home.
+ */
+async function paymentCallback(req, res) {
+  const reference = String(req.query.reference || req.query.trxref || '').trim();
+  const client = String(process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+  const target = new URL('/checkout', client);
+  if (reference) target.searchParams.set('reference', reference);
+
+  try {
+    if (!reference) throw new Error('Payment reference is missing');
+    const transaction = await paymentService.verify(reference);
+    if (transaction.refundStatus === 'processed') target.searchParams.set('payment', 'refunded');
+    else if (transaction.refundStatus === 'pending') target.searchParams.set('payment', 'refund_pending');
+    else target.searchParams.set('payment', 'success');
+  } catch (error) {
+    logger.warn('Paystack callback verification failed:', { reference, error: error.message });
+    target.searchParams.set('payment', 'failed');
+  }
+  return res.redirect(303, target.toString());
+}
+
+/**
  * @route   GET /api/payments/:reference
  * @desc    Retrieve transaction by reference
  * @access  Public / Private
@@ -88,20 +111,20 @@ async function handlePaystackWebhook(req, res, next) {
 
     logger.info('Paystack webhook event received:', { event });
 
-    if (event === 'charge.success' && data && data.reference) {
-      await paymentService.verify(data.reference);
-    }
-
+    await paymentService.processWebhook({ event, data });
     res.status(200).json({ success: true, message: 'WEBHOOK_PROCESSED' });
   } catch (error) {
     logger.error('Paystack webhook error:', { error: error.message });
-    res.status(200).json({ success: false, message: error.message });
+    // A non-2xx response asks Paystack to retry instead of silently losing a
+    // valid financial event during a transient database/provider failure.
+    res.status(500).json({ success: false, message: 'Webhook processing failed' });
   }
 }
 
 module.exports = {
   initializePayment,
   verifyPayment,
+  paymentCallback,
   getPaymentByReference,
   listTransactions,
   handlePaystackWebhook,

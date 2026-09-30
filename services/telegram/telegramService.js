@@ -373,7 +373,7 @@ const telegramService = {
       await customerService.setOptOutByIdentity(sellerId, 'telegram', userId, true);
       reply = 'You have been unsubscribed from Telegram marketing broadcasts. Essential order updates will still be sent.';
     } else if (['/help', 'help'].includes(command)) {
-      reply = 'Ask me to find a product, check stock, calculate an order, or show an existing order. Use /stop to leave marketing broadcasts.';
+      reply = 'Ask me to find a product or place an order. Send “MY ORDERS” to see purchases, “TRACK #00012” for status, “RESUME #00012” to continue payment, or “CANCEL ORDER #00012”. Use /stop to leave marketing broadcasts.';
       replyMarkup = customer.phone ? undefined : contactKeyboard();
     } else {
       const aiResult = await aiService.chat({

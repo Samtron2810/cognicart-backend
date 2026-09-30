@@ -209,6 +209,51 @@ const productService = {
   },
 
   /**
+   * Restore reserved stock exactly once for a durable operation key. The stock
+   * increment and idempotency marker live in one atomic Product update, so a
+   * cancellation retry can safely continue after a process crash.
+   */
+  async restoreStockOnce(id, sellerId, quantity, variantId, operationKey) {
+    if (!mongoose.isValidObjectId(id)) throw new Error(`Product not found: ${id}`);
+    const amount = Number(quantity);
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Restoration quantity must be positive');
+    if (!operationKey) throw new Error('Inventory restoration operation key is required');
+
+    const filter = {
+      _id: id,
+      sellerId,
+      stockAdjustmentKeys: { $ne: operationKey },
+    };
+    const increment = { stock: amount };
+    const options = { new: true };
+    if (variantId) {
+      filter.variants = { $elemMatch: { id: variantId } };
+      increment['variants.$[variant].stock'] = amount;
+      options.arrayFilters = [{ 'variant.id': variantId }];
+    }
+
+    const product = await Product.findOneAndUpdate(
+      filter,
+      {
+        $inc: increment,
+        $addToSet: { stockAdjustmentKeys: operationKey },
+      },
+      options
+    );
+    if (product) return { product: product.toJSON(), applied: true };
+
+    const current = await Product.findOne({ _id: id, sellerId }).select('+stockAdjustmentKeys');
+    if (!current) throw new Error(`Product not found: ${id}`);
+    if ((current.stockAdjustmentKeys || []).includes(operationKey)) {
+      return { product: current.toJSON(), applied: false };
+    }
+    if (variantId && !(current.variants || []).some((variant) => variant.id === variantId)) {
+      throw new Error(`Variant ${variantId} not found for product ${current.name}`);
+    }
+    throw new Error(`Could not restore stock for ${current.name}`);
+  },
+
+  /**
    * Direct stock adjustment for orders
    */
   async adjustStock(id, sellerId, quantityToDeduct, variantId) {

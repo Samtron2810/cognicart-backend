@@ -12,7 +12,9 @@ const checkStock = require('./tools/checkStock');
 const getBusinessInformation = require('./tools/getBusinessInformation');
 const calculateOrderTotal = require('./tools/calculateOrderTotal');
 const createOrder = require('./tools/createOrder');
+const listOrders = require('./tools/listOrders');
 const getOrder = require('./tools/getOrder');
+const cancelOrder = require('./tools/cancelOrder');
 const createPayment = require('./tools/createPayment');
 const agentSessionService = require('./agentSessionService');
 const { createDeterministicAgent } = require('./deterministicAgent');
@@ -27,7 +29,9 @@ const toolsRegistry = {
   getBusinessInformation: getBusinessInformation.execute,
   calculateOrderTotal: calculateOrderTotal.execute,
   createOrder: createOrder.execute,
+  listOrders: listOrders.execute,
   getOrder: getOrder.execute,
+  cancelOrder: cancelOrder.execute,
   createPayment: createPayment.execute,
 };
 
@@ -38,7 +42,9 @@ const toolsDefinitions = [
   getBusinessInformation.definition,
   calculateOrderTotal.definition,
   createOrder.definition,
+  listOrders.definition,
   getOrder.definition,
+  cancelOrder.definition,
   createPayment.definition,
 ];
 

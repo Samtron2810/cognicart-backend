@@ -12,6 +12,7 @@ const customerService = require('../customers/customerService');
 const productService = require('../products/productService');
 const businessService = require('../sellers/businessService');
 const { sanitize, escapeRegex, normalizePhone, isEmail } = require('../../utils/validators');
+const { counterpartyOrderFilter } = require('../ai/toolGuards');
 const logger = require('../../utils/logger');
 
 function getNotificationService() {
@@ -26,6 +27,80 @@ function notFound(message = 'Order not found') {
   const err = new Error(message);
   err.statusCode = 404;
   return err;
+}
+
+function httpError(message, statusCode = 400) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  return err;
+}
+
+function identifierFilter(identifier) {
+  const raw = String(identifier || '').trim();
+  if (!raw) throw httpError('Order reference is required');
+  if (mongoose.isValidObjectId(raw)) return { _id: raw };
+
+  const normalized = raw.replace(/^order\s*/i, '').replace(/^ord[-_\s#]*/i, '').replace(/^#/, '');
+  if (/^\d+$/.test(normalized)) {
+    const orderNumber = Number(normalized);
+    if (Number.isSafeInteger(orderNumber) && orderNumber > 0) return { orderNumber };
+  }
+  throw notFound();
+}
+
+async function restoreCancelledInventory(order) {
+  const shouldRestore = order.source !== 'manual' || order.inventoryAdjusted === true;
+  if (!shouldRestore || order.inventoryRestoredAt) return order.toJSON();
+
+  const claimed = await Order.findOneAndUpdate(
+    {
+      _id: order._id,
+      inventoryRestoredAt: null,
+    },
+    { $set: { inventoryRestoreClaimedAt: new Date() } },
+    { new: true }
+  ).select('+inventoryRestoreClaimedAt');
+
+  if (!claimed) {
+    const current = await Order.findById(order._id);
+    return current ? current.toJSON() : order.toJSON();
+  }
+
+  // Concurrent workers may both reach this loop, but each Product increment is
+  // guarded by its own atomic operation key. That avoids both duplicate stock
+  // and a stale global lock after a process crash.
+
+  try {
+    for (const [index, item] of (claimed.items || []).entries()) {
+      if (!item.productId) continue;
+      const operationKey = `${claimed._id}:cancel:${index}:${item.productId}:${item.variantId || 'base'}`;
+      await productService.restoreStockOnce(
+        item.productId,
+        claimed.sellerId,
+        Number(item.quantity),
+        item.variantId,
+        operationKey
+      );
+    }
+    const completed = await Order.findByIdAndUpdate(
+      claimed._id,
+      {
+        $set: { inventoryRestoredAt: new Date() },
+        $unset: { inventoryRestoreClaimedAt: 1 },
+      },
+      { new: true }
+    );
+    return completed.toJSON();
+  } catch (error) {
+    // Successful Product updates carry durable idempotency keys. Releasing the
+    // claim lets a retry continue the unfinished items without incrementing any
+    // item that was already restored.
+    await Order.updateOne(
+      { _id: claimed._id, inventoryRestoredAt: null },
+      { $unset: { inventoryRestoreClaimedAt: 1 } }
+    );
+    throw httpError(`Order was cancelled but inventory restoration failed: ${error.message}`, 500);
+  }
 }
 
 const orderService = {
@@ -337,6 +412,100 @@ const orderService = {
     };
   },
 
+  /** Buyer-visible recent orders, always scoped to the conversation identity. */
+  async listForCounterparty(sellerId, context, { status, paymentStatus, limit = 5 } = {}) {
+    const filter = counterpartyOrderFilter(sellerId, context);
+    if (status) filter.orderStatus = status;
+    if (paymentStatus) filter.paymentStatus = paymentStatus;
+    const capped = Math.min(Math.max(Number(limit) || 5, 1), 10);
+    const orders = await Order.find(filter).sort({ createdAt: -1 }).limit(capped);
+    return orders.map((order) => order.toJSON());
+  },
+
+  /** Resolve an ObjectId or human reference without leaving buyer scope. */
+  async resolveForCounterparty(sellerId, identifier, context) {
+    const filter = {
+      ...counterpartyOrderFilter(sellerId, context),
+      ...identifierFilter(identifier),
+    };
+    const order = await Order.findOne(filter);
+    if (!order) throw notFound();
+    return order.toJSON();
+  },
+
+  /**
+   * Cancel an unpaid, unfulfilled order and restore reserved inventory exactly
+   * once. Paid/processing/shipped orders require a seller-managed refund flow.
+   */
+  async cancel(id, sellerId, { cancelledBy = 'seller', reason = '' } = {}) {
+    if (!id || !mongoose.isValidObjectId(id)) throw notFound();
+    let order = await Order.findOne({ _id: id, sellerId }).select('+inventoryRestoreClaimedAt');
+    if (!order) throw notFound();
+
+    if (order.paymentStatus === 'Paid') {
+      throw httpError('A paid order cannot be cancelled until its payment is refunded', 409);
+    }
+    if (!['Pending', 'Confirmed', 'Cancelled'].includes(order.orderStatus)) {
+      throw httpError(`This order can no longer be cancelled because it is ${order.orderStatus}`, 409);
+    }
+
+    const alreadyCancelled = order.orderStatus === 'Cancelled';
+    if (!alreadyCancelled) {
+      order = await Order.findOneAndUpdate(
+        {
+          _id: id,
+          sellerId,
+          paymentStatus: { $ne: 'Paid' },
+          orderStatus: { $in: ['Pending', 'Confirmed'] },
+        },
+        {
+          $set: {
+            orderStatus: 'Cancelled',
+            cancelledAt: new Date(),
+            cancelledBy,
+            cancellationReason: sanitize(reason || 'Cancelled before fulfillment', 300),
+          },
+        },
+        { new: true }
+      ).select('+inventoryRestoreClaimedAt');
+      if (!order) throw httpError('Order changed and can no longer be cancelled', 409);
+    }
+
+    // Pending links are invalid inside this application from this point. If an
+    // already-open provider page completes later, verification queues a refund.
+    let paymentAbandonError = null;
+    try {
+      const paymentService = require('../payments/paymentService');
+      await paymentService.abandonPendingForOrder(order._id.toString(), sellerId, 'order_cancelled');
+    } catch (error) {
+      paymentAbandonError = error;
+      logger.error('Could not abandon pending payment during cancellation:', {
+        orderId: order._id.toString(),
+        error: error.message,
+      });
+    }
+
+    const restored = await restoreCancelledInventory(order);
+    if (paymentAbandonError) {
+      throw httpError(
+        `Order was cancelled but pending payment invalidation failed: ${paymentAbandonError.message}`,
+        500
+      );
+    }
+    if (!alreadyCancelled && restored.source !== 'manual') {
+      const ns = getNotificationService();
+      if (ns) ns.sendOrderStatusUpdate(restored, 'Cancelled').catch(() => {});
+    }
+    logger.info('Order cancelled:', { id, sellerId, cancelledBy });
+    return restored;
+  },
+
+  async cancelForCounterparty(sellerId, identifier, context, reason = '') {
+    const order = await this.resolveForCounterparty(sellerId, identifier, context);
+    if (order.source === 'manual') throw notFound();
+    return this.cancel(order.id, sellerId, { cancelledBy: 'buyer', reason });
+  },
+
   /**
    * Get single order by ID (tenant isolation enforced)
    */
@@ -364,9 +533,12 @@ const orderService = {
     }
 
     if (!id || !mongoose.isValidObjectId(id)) throw notFound();
+    if (orderStatus === 'Cancelled') {
+      return this.cancel(id, sellerId, { cancelledBy: 'seller', reason: 'Cancelled by seller' });
+    }
 
     const order = await Order.findOneAndUpdate(
-      { _id: id, sellerId },
+      { _id: id, sellerId, orderStatus: { $ne: 'Cancelled' } },
       { $set: { orderStatus } },
       { new: true }
     );

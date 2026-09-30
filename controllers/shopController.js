@@ -6,15 +6,10 @@
 const shopperAuthService = require('../services/shop/shopperAuthService');
 const shopperService = require('../services/shop/shopperService');
 const { SHOPPER_COOKIE } = require('../middleware/shopperMiddleware');
-
-function sessionCookieOptions() {
-  return {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-  };
-}
+const {
+  shopperSessionCookieOptions,
+  clearSessionCookieOptions,
+} = require('../utils/sessionCookie');
 
 const shopController = {
   /**
@@ -42,7 +37,7 @@ const shopController = {
       const { phone, email, code } = req.body;
       const result = await shopperAuthService.verifyOtp({ phone, email, code });
 
-      res.cookie(SHOPPER_COOKIE, result.token, sessionCookieOptions());
+      res.cookie(SHOPPER_COOKIE, result.token, shopperSessionCookieOptions());
       res.status(200).json(result);
     } catch (error) {
       next(error);
@@ -63,7 +58,7 @@ const shopController = {
       const token = req.body.token || req.query.t;
       const result = await shopperAuthService.consumeMagicLink(token);
 
-      res.cookie(SHOPPER_COOKIE, result.token, sessionCookieOptions());
+      res.cookie(SHOPPER_COOKIE, result.token, shopperSessionCookieOptions());
       res.status(200).json(result);
     } catch (error) {
       next(error);
@@ -76,7 +71,7 @@ const shopController = {
    * @access  Public
    */
   async logout(req, res) {
-    res.clearCookie(SHOPPER_COOKIE);
+    res.clearCookie(SHOPPER_COOKIE, clearSessionCookieOptions());
     res.status(200).json({ success: true, message: 'Signed out' });
   },
 

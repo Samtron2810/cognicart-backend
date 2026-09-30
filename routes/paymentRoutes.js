@@ -11,7 +11,10 @@ const { verifyPaystackSignature } = require('../middleware/webhookMiddleware');
 // Payment Checkout Initialization
 router.post('/initialize', optionalAuth, paymentController.initializePayment);
 
-// Transaction Verification (both POST and GET supported for flexibility)
+// Paystack redirects the buyer here; the backend verifies before returning to UI.
+router.get('/callback', paymentController.paymentCallback);
+
+// Transaction verification always calls Paystack; local references are never trusted.
 router.post('/verify/:reference', paymentController.verifyPayment);
 router.get('/verify/:reference', paymentController.verifyPayment);
 

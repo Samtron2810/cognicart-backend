@@ -15,7 +15,6 @@ const paymentSchema = new mongoose.Schema(
     orderId: {
       type: String,
       required: [true, 'Order ID is required'],
-      index: true,
     },
     amount: {
       type: Number,
@@ -72,14 +71,54 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       default: 'paystack',
     },
+    authorizationUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    accessCode: {
+      type: String,
+      default: '',
+      trim: true,
+      select: false,
+    },
+    providerTransactionId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    providerStatus: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     verifiedAt: {
       type: Date,
       default: null,
     },
+    lastVerifiedAt: {
+      type: Date,
+      default: null,
+    },
+    refundStatus: {
+      type: String,
+      enum: ['none', 'pending', 'processed', 'failed'],
+      default: 'none',
+    },
+    refundId: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    refundReason: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 300,
+    },
     idempotencyKey: {
       type: String,
-      index: true,
-      sparse: true,
+      default: undefined,
     },
   },
   {
@@ -90,6 +129,7 @@ const paymentSchema = new mongoose.Schema(
         ret.id = ret._id ? ret._id.toString() : ret.id;
         delete ret._id;
         delete ret.__v;
+        delete ret.accessCode;
         return ret;
       },
     },
@@ -98,6 +138,22 @@ const paymentSchema = new mongoose.Schema(
 
 paymentSchema.index({ sellerId: 1, createdAt: -1 });
 paymentSchema.index({ sellerId: 1, status: 1 });
+paymentSchema.index({ orderId: 1, createdAt: -1 });
+paymentSchema.index(
+  { orderId: 1 },
+  {
+    name: 'unique_pending_payment_per_order',
+    unique: true,
+    partialFilterExpression: { status: 'pending' },
+  }
+);
+paymentSchema.index(
+  { sellerId: 1, idempotencyKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { idempotencyKey: { $type: 'string' } },
+  }
+);
 
 const Payment = mongoose.model('Payment', paymentSchema);
 

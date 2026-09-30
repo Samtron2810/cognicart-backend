@@ -26,8 +26,15 @@ app.use(securityHeaders);
 // Apply modular CORS policy
 app.use(cors(corsOptions));
 
-// Body parsing with 500KB constraint
-app.use(express.json({ limit: '500kb' }));
+// Body parsing with 500KB constraint. Preserve the exact bytes for provider
+// webhook HMAC verification; JSON re-serialization is not byte-identical.
+app.use(express.json({
+  limit: '500kb',
+  verify: (req, res, buffer) => {
+    const path = String(req.originalUrl || '').split('?')[0].replace(/\/$/, '');
+    if (path === '/api/payments/webhook') req.rawBody = Buffer.from(buffer);
+  },
+}));
 app.use(express.urlencoded({ extended: true, limit: '500kb' }));
 app.use(cookieParser());
 

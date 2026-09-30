@@ -198,6 +198,32 @@ const orderSchema = new mongoose.Schema(
       trim: true,
       maxlength: 1000,
     },
+    cancelledAt: {
+      type: Date,
+      default: null,
+    },
+    cancelledBy: {
+      type: String,
+      enum: ['buyer', 'seller', 'system', ''],
+      default: '',
+    },
+    cancellationReason: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 300,
+    },
+    // Automatic orders reserve stock at creation. Cancellation restores it
+    // exactly once; this timestamp records restoration work in progress.
+    inventoryRestoredAt: {
+      type: Date,
+      default: null,
+    },
+    inventoryRestoreClaimedAt: {
+      type: Date,
+      default: null,
+      select: false,
+    },
     // Whether catalog inventory was deducted for this manually logged order.
     // Automatic orders always reserve stock and do not need this flag.
     inventoryAdjusted: {
@@ -221,6 +247,7 @@ const orderSchema = new mongoose.Schema(
         ret.isManual = ret.source === 'manual';
         delete ret._id;
         delete ret.__v;
+        delete ret.inventoryRestoreClaimedAt;
         return ret;
       },
     },

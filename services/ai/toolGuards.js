@@ -68,6 +68,28 @@ function buildToolContext({
   };
 }
 
+/** Build a database filter scoped to the authenticated conversation identity. */
+function counterpartyOrderFilter(sellerId, context = {}) {
+  if (!sellerId) throw new Error('Seller ID is required');
+  if (context.trusted) return { sellerId };
+
+  if (context.channel && context.channelUserId) {
+    return {
+      sellerId,
+      channel: context.channel,
+      channelUserId: String(context.channelUserId),
+    };
+  }
+  if (context.shopperId) return { sellerId, shopperId: String(context.shopperId) };
+
+  const phone = comparablePhone(context.customerPhone);
+  if (phone) return { sellerId, customerPhone: phone };
+
+  const error = new Error('A verified customer identity is required');
+  error.statusCode = 401;
+  throw error;
+}
+
 /**
  * True when the order belongs to the counterparty of this conversation.
  */
@@ -113,6 +135,7 @@ function requireOrderAccess(order, context, orderId) {
 module.exports = {
   buildToolContext,
   comparablePhone,
+  counterpartyOrderFilter,
   ownsOrder,
   requireOrderAccess,
 };

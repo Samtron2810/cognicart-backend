@@ -7,6 +7,7 @@
  */
 
 const { getEffectivePrice } = require('../../models/Product');
+const { isEmail } = require('../../utils/validators');
 const { comparablePhone } = require('./toolGuards');
 
 const STAGES = Object.freeze({
@@ -17,6 +18,8 @@ const STAGES = Object.freeze({
   AWAITING_ADDRESS: 'awaiting_address',
   AWAITING_CONTACT: 'awaiting_contact',
   AWAITING_CONFIRMATION: 'awaiting_confirmation',
+  AWAITING_PAYMENT_EMAIL: 'awaiting_payment_email',
+  AWAITING_CANCELLATION_CONFIRMATION: 'awaiting_cancellation_confirmation',
 });
 
 const YES = new Set(['yes', 'yes please', 'confirm', 'place order', 'confirm order', 'ok', 'okay']);
@@ -178,12 +181,16 @@ function availableVariants(product) {
 
 function resetDraft(state) {
   const lastOrderId = state.lastOrderId || '';
+  const lastOrderReference = state.lastOrderReference || '';
   const customerName = state.customerName || '';
+  const paymentEmail = state.paymentEmail || '';
   for (const key of Object.keys(state)) delete state[key];
   Object.assign(state, {
     stage: STAGES.BROWSING,
     lastOrderId,
+    lastOrderReference,
     customerName,
+    paymentEmail,
   });
   return state;
 }
@@ -196,6 +203,27 @@ function productList(products, { numbered = false } = {}) {
       return `${prefix} ${product.name} — ${money(product.price)} (${stock > 0 ? `${stock} in stock` : 'out of stock'})`;
     })
     .join('\n');
+}
+
+function orderReference(order) {
+  return order.reference || (order.orderNumber ? `#${String(order.orderNumber).padStart(5, '0')}` : order.id);
+}
+
+function extractOrderReference(value, { allowBareNumber = false } = {}) {
+  const raw = String(value || '').trim();
+  const callback = raw.match(/^(?:track|resume|cancel-order|pay-order):([a-f\d]{24})$/i);
+  if (callback) return callback[1];
+  const objectId = raw.match(/\b[a-f\d]{24}\b/i);
+  if (objectId) return objectId[0];
+  const human = raw.match(/(?:#|\b(?:order|ord)[\s#:_-]*)0*(\d+)\b/i);
+  if (human) return `#${human[1]}`;
+  if (allowBareNumber && /^0*\d+$/.test(raw)) return `#${Number(raw)}`;
+  return '';
+}
+
+function orderLine(order, index) {
+  const names = (order.items || []).map((item) => `${item.name} x${item.quantity}`).join(', ');
+  return `${index + 1}. ${orderReference(order)} — ${names || 'Order'} — ${money(order.total)} — ${order.orderStatus} / ${order.paymentStatus}`;
 }
 
 function createDeterministicAgent({ tools, sessions }) {
@@ -259,6 +287,120 @@ function createDeterministicAgent({ tools, sessions }) {
       { text: 'Confirm order', callback_data: 'confirm:yes' },
       { text: 'Cancel', callback_data: 'confirm:no' },
     ], 2);
+  }
+
+  function orderActionButtons(order) {
+    const buttons = [{ text: 'Track', callback_data: `track:${order.id}` }];
+    if (order.paymentStatus === 'Pending' && ['Pending', 'Confirmed'].includes(order.orderStatus)) {
+      buttons.push({ text: 'Pay / resume', callback_data: `pay-order:${order.id}` });
+    }
+    if (['Pending', 'Confirmed'].includes(order.orderStatus) && order.paymentStatus !== 'Paid') {
+      buttons.push({ text: 'Cancel order', callback_data: `cancel-order:${order.id}` });
+    }
+    return inlineKeyboard(buttons, 1);
+  }
+
+  async function listBuyerOrders(turn, { pendingOnly = false } = {}) {
+    const orders = await turn.invoke('listOrders', {
+      limit: 5,
+      ...(pendingOnly ? { paymentStatus: 'Pending' } : {}),
+    });
+    if (!orders.length) {
+      return {
+        reply: pendingOnly ? 'You have no pending orders in this Telegram store.' : 'You have no orders in this Telegram store yet.',
+        intent: 'orders_empty',
+      };
+    }
+    return {
+      reply: `Your recent${pendingOnly ? ' pending' : ''} orders:\n${orders.map(orderLine).join('\n')}\n\nSend “TRACK #00001”, “RESUME #00001”, or “CANCEL ORDER #00001”.`,
+      intent: 'orders_listed',
+      replyMarkup: inlineKeyboard(
+        orders.map((order) => ({
+          text: `${orderReference(order)} · ${order.orderStatus}/${order.paymentStatus}`.slice(0, 60),
+          callback_data: `track:${order.id}`,
+        }))
+      ),
+    };
+  }
+
+  async function trackBuyerOrder(turn, identifier, { resumed = false } = {}) {
+    try {
+      const order = await turn.invoke('getOrder', { orderId: identifier });
+      turn.state.lastOrderId = order.id;
+      const items = (order.items || [])
+        .map((item) => `• ${item.name}${item.variantLabel ? ` (${item.variantLabel})` : ''} x${item.quantity}`)
+        .join('\n');
+      const next = order.orderStatus === 'Cancelled'
+        ? (order.paymentStatus === 'Refunded'
+          ? 'This order is cancelled and its payment has been refunded.'
+          : order.paymentStatus === 'Paid'
+            ? 'This order is cancelled. Its late payment is being handled through the refund workflow.'
+            : 'This order is cancelled and cannot be paid.')
+        : order.paymentStatus === 'Refunded'
+          ? 'This payment was refunded. Contact the seller if you still need the items.'
+          : order.paymentStatus === 'Paid'
+            ? `Payment is confirmed. Fulfillment is currently ${order.orderStatus}.`
+            : ['Processing', 'Shipped', 'Delivered'].includes(order.orderStatus)
+              ? `This unpaid order is already ${order.orderStatus}. Contact the seller before attempting payment or cancellation.`
+              : 'Reply “PAY” to continue with the same secure payment link, or “CANCEL ORDER” to cancel.';
+      return {
+        reply: [
+          `${resumed ? 'Order resumed' : 'Order status'}: ${order.reference || identifier}`,
+          items,
+          `Total: ${money(order.total)}`,
+          `Fulfillment: ${order.orderStatus}`,
+          `Payment: ${order.paymentStatus}`,
+          '',
+          next,
+        ].filter(Boolean).join('\n'),
+        intent: resumed ? 'order_resumed' : 'order_tracked',
+        orderId: order.id,
+        replyMarkup: orderActionButtons(order),
+      };
+    } catch {
+      return {
+        reply: 'I could not find that order in your Telegram purchase history. Check the reference and try again.',
+        intent: 'order_not_found',
+      };
+    }
+  }
+
+  async function requestOrderCancellation(turn, identifier) {
+    const target = identifier || turn.state.lastOrderId;
+    if (!target) {
+      return {
+        reply: 'Please include the order reference, for example “CANCEL ORDER #00012”, or use “MY ORDERS” first.',
+        intent: 'order_reference_required',
+      };
+    }
+    try {
+      const order = await turn.invoke('getOrder', { orderId: target });
+      if (order.orderStatus === 'Cancelled') {
+        return { reply: `${order.reference} is already cancelled.`, intent: 'order_already_cancelled' };
+      }
+      if (order.paymentStatus === 'Paid' || !['Pending', 'Confirmed'].includes(order.orderStatus)) {
+        return {
+          reply: `${order.reference} cannot be cancelled in the bot because it is ${order.orderStatus} with payment ${order.paymentStatus}. Please contact the seller.`,
+          intent: 'order_not_cancellable',
+        };
+      }
+      turn.state.stage = STAGES.AWAITING_CANCELLATION_CONFIRMATION;
+      turn.state.cancellationOrderId = order.id;
+      turn.state.cancellationReference = order.reference;
+      return {
+        reply: `Cancel ${order.reference} for ${money(order.total)}? Reserved stock will be returned. This cannot be undone.`,
+        intent: 'cancellation_confirmation_required',
+        replyMarkup: inlineKeyboard([
+          { text: 'Yes, cancel order', callback_data: 'cancel-confirm:yes' },
+          { text: 'Keep order', callback_data: 'cancel-confirm:no' },
+        ], 1),
+      };
+    } catch {
+      return {
+        reply: 'I could not find that order in your Telegram purchase history.',
+        intent: 'order_not_found',
+      };
+    }
   }
 
   async function prepareSummary(turn) {
@@ -558,10 +700,11 @@ function createDeterministicAgent({ tools, sessions }) {
       state.lastOrderId = order.id;
       resetDraft(state);
       state.lastOrderId = order.id;
+      state.lastOrderReference = order.reference || (order.orderNumber ? `#${String(order.orderNumber).padStart(5, '0')}` : '');
       return {
         reply: [
           '🎉 Order Confirmed!',
-          `Order: #${String(order.orderNumber || order.id).slice(-12).toUpperCase()}`,
+          `Order: ${order.reference || (order.orderNumber ? `#${String(order.orderNumber).padStart(5, '0')}` : order.id)}`,
           `Product: ${productName}`,
           `Total: ${money(order.total)} (including ${money(order.deliveryFee)} delivery)`,
           `Delivery Address: ${order.deliveryAddress}`,
@@ -580,28 +723,72 @@ function createDeterministicAgent({ tools, sessions }) {
     }
   }
 
-  async function handlePayment(turn) {
-    if (!turn.state.lastOrderId) {
+  async function handlePayment(turn, identifier = '') {
+    const target = identifier || turn.state.lastOrderId;
+    if (!target) {
       return {
-        reply: 'You do not have a confirmed order in this conversation yet. Choose a product first.',
+        reply: 'I do not have a recent order to pay. Send “MY ORDERS”, then resume the order you want.',
         intent: 'no_order',
       };
     }
+
     try {
-      const payment = await turn.invoke('createPayment', { orderId: turn.state.lastOrderId });
+      const order = await turn.invoke('getOrder', { orderId: target });
+      turn.state.lastOrderId = order.id;
+      turn.state.lastOrderReference = order.reference || '';
+      if (order.orderStatus === 'Cancelled') {
+        return { reply: `${order.reference} is cancelled and cannot be paid.`, intent: 'order_cancelled' };
+      }
+      if (order.paymentStatus === 'Paid') {
+        return { reply: `${order.reference} has already been paid.`, intent: 'already_paid', orderId: order.id };
+      }
+      if (order.paymentStatus === 'Refunded') {
+        return { reply: `${order.reference} has been refunded and cannot be paid again.`, intent: 'order_refunded' };
+      }
+      if (!['Pending', 'Confirmed'].includes(order.orderStatus)) {
+        return {
+          reply: `${order.reference} is already ${order.orderStatus}. Contact the seller before attempting payment.`,
+          intent: 'payment_requires_seller',
+          orderId: order.id,
+        };
+      }
+    } catch {
+      return { reply: 'I could not find that order in your Telegram purchase history.', intent: 'order_not_found' };
+    }
+
+    const email = String(turn.state.paymentEmail || turn.customerEmail || '').trim().toLowerCase();
+    if (!isEmail(email)) {
+      turn.state.stage = STAGES.AWAITING_PAYMENT_EMAIL;
+      turn.state.paymentOrderId = turn.state.lastOrderId;
+      return {
+        reply: 'Please send a valid email address for Paystack checkout and your payment receipt.',
+        intent: 'payment_email_required',
+      };
+    }
+
+    try {
+      const payment = await turn.invoke('createPayment', {
+        orderId: turn.state.lastOrderId,
+        email,
+      });
+      turn.state.stage = STAGES.BROWSING;
+      turn.state.paymentOrderId = '';
       if (payment.alreadyPaid) {
         return { reply: payment.message, intent: 'already_paid', orderId: turn.state.lastOrderId };
       }
       return {
         reply: [
-          `💳 Payment link ready for Order #${turn.state.lastOrderId.slice(-6).toUpperCase()}!`,
+          `💳 ${payment.reused ? 'Existing payment link' : 'Payment link ready'} for ${turn.state.lastOrderReference || 'your order'}!`,
           `Amount: ${money(payment.amount)}`,
           `Reference: ${payment.reference}`,
           '',
           `Pay now: ${payment.authorization_url}`,
+          '',
+          'Sending PAY again will return this same pending link, not create another charge.',
         ].join('\n'),
         intent: 'payment_ready',
         orderId: turn.state.lastOrderId,
+        paymentReused: Boolean(payment.reused),
       };
     } catch (error) {
       return {
@@ -618,16 +805,136 @@ function createDeterministicAgent({ tools, sessions }) {
 
     if (!rawBody) return turn.finish({ reply: 'Please send a message so I can help.', intent: 'empty' });
 
+    if (turn.state.stage === STAGES.AWAITING_CANCELLATION_CONFIRMATION) {
+      const confirmation = normalized === 'cancel-confirm:yes'
+        ? 'yes'
+        : normalized === 'cancel-confirm:no'
+          ? 'no'
+          : normalized;
+      if (YES.has(confirmation)) {
+        try {
+          const cancelled = await turn.invoke('cancelOrder', {
+            orderId: turn.state.cancellationOrderId,
+            reason: 'Cancelled by buyer in Telegram',
+          });
+          const reference = cancelled.reference || turn.state.cancellationReference || 'Order';
+          resetDraft(turn.state);
+          turn.state.lastOrderId = cancelled.id;
+          turn.state.lastOrderReference = cancelled.reference || '';
+          return turn.finish({
+            reply: `${reference} has been cancelled. Reserved stock was returned and pending payment links were closed.`,
+            intent: 'order_cancelled',
+            orderId: cancelled.id,
+          });
+        } catch (error) {
+          resetDraft(turn.state);
+          const partial = /order was cancelled/i.test(error.message);
+          return turn.finish({
+            reply: partial
+              ? 'The order is cancelled and must not be paid, but stock restoration needs seller attention. Please contact the seller.'
+              : `I could not cancel that order: ${error.message}`,
+            intent: partial ? 'cancellation_inventory_review' : 'cancellation_failed',
+          });
+        }
+      }
+      if (NO.has(confirmation)) {
+        const reference = turn.state.cancellationReference || 'The order';
+        resetDraft(turn.state);
+        return turn.finish({ reply: `${reference} was kept.`, intent: 'cancellation_declined' });
+      }
+      return turn.finish({
+        reply: 'Please confirm whether to cancel the order.',
+        intent: 'cancellation_confirmation_required',
+        replyMarkup: inlineKeyboard([
+          { text: 'Yes, cancel order', callback_data: 'cancel-confirm:yes' },
+          { text: 'Keep order', callback_data: 'cancel-confirm:no' },
+        ], 1),
+      });
+    }
+
+    if (turn.state.stage === STAGES.AWAITING_PAYMENT_EMAIL) {
+      if (NO.has(normalized)) {
+        turn.state.stage = STAGES.BROWSING;
+        turn.state.paymentOrderId = '';
+        return turn.finish({ reply: 'Payment was not started. Your order remains pending.', intent: 'payment_cancelled' });
+      }
+      const email = rawBody.trim().toLowerCase();
+      if (!isEmail(email)) {
+        return turn.finish({
+          reply: 'That email address is not valid. Please enter a valid email, or reply “CANCEL”.',
+          intent: 'payment_email_required',
+        });
+      }
+      turn.state.paymentEmail = email;
+      turn.state.lastOrderId = turn.state.paymentOrderId || turn.state.lastOrderId;
+      return turn.finish(await handlePayment(turn));
+    }
+
+    const asksForOrders = /^(?:\/)?orders?$/.test(normalized)
+      || /^(?:show|list)(?: me)? (?:my )?orders$/.test(normalized)
+      || normalized === 'my orders'
+      || normalized === 'order history';
+    const asksForPendingOrders = /^(?:show|list)? ?(?:my )?pending orders$/.test(normalized);
+    if (asksForOrders || asksForPendingOrders) {
+      return turn.finish(await listBuyerOrders(turn, { pendingOnly: asksForPendingOrders }));
+    }
+
+    const trackIntent = normalized.startsWith('track:')
+      || /^(?:track|check)(?: my)?(?: order)?\b/.test(normalized)
+      || /^status(?: of)?(?: my)? order\b/.test(normalized);
+    if (trackIntent) {
+      const reference = extractOrderReference(rawBody);
+      if (!reference) {
+        return turn.finish({
+          reply: 'Please include the order reference, for example “TRACK #00012”.',
+          intent: 'order_reference_required',
+        });
+      }
+      return turn.finish(await trackBuyerOrder(turn, reference));
+    }
+
+    const resumeIntent = normalized.startsWith('resume:') || /^resume(?: my)?(?: order)?\b/.test(normalized);
+    if (resumeIntent) {
+      const reference = extractOrderReference(rawBody) || turn.state.lastOrderId;
+      if (!reference) {
+        return turn.finish({
+          reply: 'Please include the order reference, for example “RESUME #00012”.',
+          intent: 'order_reference_required',
+        });
+      }
+      return turn.finish(await trackBuyerOrder(turn, reference, { resumed: true }));
+    }
+
+    const cancelOrderIntent = normalized.startsWith('cancel-order:') || /^cancel(?: my)? order\b/.test(normalized);
+    if (cancelOrderIntent) {
+      return turn.finish(await requestOrderCancellation(turn, extractOrderReference(rawBody)));
+    }
+
+    if (normalized === 'cancel payment' || normalized === 'stop payment') {
+      return turn.finish({
+        reply: 'No payment is taken until you complete Paystack checkout. Your existing link will be reused if you later send PAY. To release stock and close the order, send “CANCEL ORDER”.',
+        intent: 'payment_not_completed',
+      });
+    }
+
     if (NO.has(normalized) && turn.state.stage !== STAGES.AWAITING_CONFIRMATION) {
       resetDraft(turn.state);
       return turn.finish({
-        reply: 'Your current selection has been cleared. What product are you looking for?',
+        reply: 'Your current product selection has been cleared. Existing confirmed orders were not cancelled. What product are you looking for?',
         intent: 'cancelled',
       });
     }
 
-    const wantsPayment = normalized === 'pay' || normalized.includes('payment link') || normalized === 'how to pay';
-    if (wantsPayment) return turn.finish(await handlePayment(turn));
+    const paymentCallback = normalized.match(/^pay-order:([a-f\d]{24})$/);
+    const wantsPayment = Boolean(paymentCallback)
+      || normalized === 'pay'
+      || normalized.includes('payment link')
+      || normalized === 'how to pay'
+      || /^pay(?: for)?(?: order)?\b/.test(normalized);
+    if (wantsPayment) {
+      const reference = paymentCallback ? paymentCallback[1] : extractOrderReference(rawBody);
+      return turn.finish(await handlePayment(turn, reference));
+    }
 
     if (turn.state.stage === STAGES.CHOOSING_PRODUCT) {
       return turn.finish(await handleProductChoice(turn, rawBody));

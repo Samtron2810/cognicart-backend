@@ -15,7 +15,7 @@ The system architecture is implemented across modular phases following domain-dr
 - **Validation**: Reusable payload validation schemas and utilities (`utils/validators.js`, `utils/jwt.js`).
 
 ### Phase 2: Seller Authentication & Multi-Tenant Business Profiles
-- **Authentication**: JWT token generation (`/api/auth/register`, `/api/auth/login`, `/api/auth/me`).
+- **Authentication**: JWT token generation (`/api/auth/register`, `/api/auth/login`, `/api/auth/me`) with durable httpOnly browser sessions. Production cookies use `Secure; SameSite=None; Partitioned` for credentialed storefront/API requests, so responsive remounts and page reloads do not discard login state.
 - **Multi-Tenant Protection**: RBAC and tenant authorization guards (`middleware/authMiddleware.js`).
 - **Business Profile**: Store profile, public share contact, currency, and delivery policies (`/api/business`, `/api/sellers/:id`).
 
@@ -42,16 +42,19 @@ The system architecture is implemented across modular phases following domain-dr
   - `getBusinessInformation`: Operating hours, delivery areas, fees, and contact info.
   - `calculateOrderTotal`: Authoritative calculation of items, discounts, and delivery fees.
   - `createOrder`: Safe order creation with customer details and line items.
-  - `getOrder`: Real-time order status tracking.
-  - `createPayment`: Paystack link generation for confirmed orders.
-- **Orchestration**: `services/ai/aiService.js` uses the OpenAI tool loop when configured. Without an API key, `services/ai/deterministicAgent.js` runs a durable state machine for ranked product discovery, product/variant choice, quantity, address, verified contact, confirmation, order creation, and payment handoff.
-- **Durable Sessions**: Deterministic drafts are tenant-scoped, stored under opaque keys in MongoDB, and expire after 24 hours instead of disappearing on a process restart.
+  - `listOrders` / `getOrder`: Buyer-scoped recent history and real-time tracking.
+  - `cancelOrder`: Confirmed cancellation of eligible unpaid orders with one-time stock restoration.
+  - `createPayment`: Paystack link generation or pending-link reuse for confirmed orders.
+- **Orchestration**: `services/ai/aiService.js` uses the OpenAI tool loop when configured. Without an API key, `services/ai/deterministicAgent.js` runs a durable state machine for ranked product discovery, product/variant choice, quantity, address, verified contact, confirmation, order creation, payment handoff, and order recovery.
+- **Durable Sessions + Recovery**: Deterministic drafts are tenant-scoped, stored under opaque keys in MongoDB, and expire after 24 hours. Persisted orders remain recoverable afterward with `MY ORDERS`, `TRACK`, `RESUME`, `PAY`, and confirmed `CANCEL ORDER` commands.
 - **AI Chat Endpoint**: `POST /api/ai/chat`.
 
 ### Phase 7: Paystack Payments & Automated Reconciliation
-- **Payment Initialization**: Initializes transactions with dynamic revenue splitting (Platform Commission + Paystack Fee + Seller Payout) (`POST /api/payments/initialize`).
-- **Verification & Reconciler**: Verifies references and automatically marks orders as `Paid`, triggering seller notification (`POST /api/payments/verify/:reference`).
-- **Webhook Handshake**: Cryptographic HMAC-SHA512 signature verification for automated webhook callbacks (`POST /api/payments/webhook`).
+- **Payment Initialization**: Initializes Paystack Standard checkout server-to-server with the authoritative order total and a real buyer email. One pending link is reused per order; configuration/provider failures never fabricate a checkout URL (`POST /api/payments/initialize`).
+- **Verification & Reconciler**: Every callback or explicit verification calls Paystack and requires provider success plus exact reference, subunit amount, and currency before idempotently marking an order `Paid` (`GET|POST /api/payments/verify/:reference`).
+- **Backend Callback**: Paystack returns the browser to `GET /api/payments/callback`; the backend verifies first, then sends a fixed 303 redirect to the storefront.
+- **Webhook Handshake**: HMAC-SHA512 is calculated from the exact raw request bytes and compared timing-safely (`POST /api/payments/webhook`).
+- **Cancellation Safety**: Eligible unpaid orders return inventory exactly once and abandon local pending payments. A hosted checkout completed after cancellation is recorded and enters the Paystack refund workflow instead of fulfilling the order.
 
 ### Phase 8: Platform Revenue Tracking & Admin Dashboard
 - **Platform Analytics**: Global KPIs covering Total Sellers, Active Sellers, Platform Revenue, Total Orders, and Gross Merchandise Value (`GET /api/admin/stats`).
@@ -144,9 +147,10 @@ The system architecture is implemented across modular phases following domain-dr
 | `GET` | `/api/telegram/messages` | List Telegram transcripts | Bearer Token |
 | `POST` | `/webhooks/telegram/:botId` | Receive Telegram updates | Secret Header |
 | `POST` | `/api/ai/chat` | AI Conversational Sales Agent chat | Bearer Token |
-| `POST` | `/api/payments/initialize` | Initialize Paystack payment | Bearer Token |
-| `POST` | `/api/payments/verify/:reference` | Verify payment & reconcile order | Bearer Token |
-| `POST` | `/api/payments/webhook` | Paystack automated webhook | Signature Verified |
+| `POST` | `/api/payments/initialize` | Initialize or reuse Paystack checkout | Public / Optional Bearer |
+| `GET` | `/api/payments/callback` | Verify Paystack browser return, then redirect | Public |
+| `GET`, `POST` | `/api/payments/verify/:reference` | Verify server-to-server and reconcile order | Public |
+| `POST` | `/api/payments/webhook` | Paystack automated webhook | HMAC Signature |
 | `GET` | `/api/analytics/overview` | Seller sales & earnings overview | Bearer Token |
 | `GET` | `/api/analytics/trends` | Time-series sales trends | Bearer Token |
 | `GET` | `/api/analytics/top-products`| Top-selling products rankings | Bearer Token |
@@ -190,8 +194,8 @@ The system architecture is implemented across modular phases following domain-dr
 | :--- | :--- | :--- |
 | `NODE_ENV` | Always | Enables production cookie, CORS, indexing, and polling safeguards |
 | `PORT` | Host does not inject one | HTTP listener port |
-| `CLIENT_URL` | Always | Browser CORS origin, checkout callbacks, magic links, and order links |
-| `API_PUBLIC_URL` | Production Telegram webhooks | Public HTTPS API origin; local polling can leave it blank |
+| `CLIENT_URL` | Always | Browser CORS origin, post-verification storefront redirect, magic links, and order links |
+| `API_PUBLIC_URL` | Paystack checkout or production Telegram webhooks | Public HTTPS API origin used for backend payment callbacks and Telegram webhooks |
 | `MONGO_URI` | Always | Durable MongoDB connection |
 | `JWT_SECRET` | Always | Seller/shopper token signing and buyer-token hashing |
 | `BREVO_API_KEY`, `BREVO_SENDER_EMAIL`, `BREVO_SENDER_NAME` | Email delivery | Transactional email provider and sender identity |
@@ -416,4 +420,7 @@ node tests/phase14.test.js
 node tests/phase15.test.js
 node tests/phase16.test.js   # Telegram adapter contracts; no MongoDB required
 node tests/phase17.test.js   # removed-provider/share-link contracts; no MongoDB required
+node tests/phase18.test.js   # deterministic commerce + order recovery; no MongoDB required
+node tests/phase19.test.js   # Paystack security + recovery contracts; no MongoDB required
+node tests/phase20.test.js   # durable responsive browser sessions; no MongoDB required
 ```
