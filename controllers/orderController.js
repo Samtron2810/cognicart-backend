@@ -3,10 +3,13 @@
  * Handles order checkout, idempotency verification, listing, and fulfillment status updates
  */
 
+const mongoose = require('mongoose');
 const orderService = require('../services/orders/orderService');
 const manualOrderService = require('../services/orders/manualOrderService');
 const businessService = require('../services/sellers/businessService');
 const { buildOrderShare } = require('../utils/orderShare');
+// Order model is pre-registered by orderService's own dependency chain.
+function getOrderModel() { return mongoose.model('Order'); }
 
 /**
  * @route   GET /api/orders
@@ -169,10 +172,9 @@ async function cancelGuestOrder(req, res, next) {
     }
 
     const cleanEmail = String(email).trim().toLowerCase();
-    const Order = require('mongoose').model('Order');
+    const Order = getOrderModel();
 
     // Resolve order by ObjectId or human reference
-    const mongoose = require('mongoose');
     let orderQuery;
     if (mongoose.isValidObjectId(String(orderId).trim())) {
       orderQuery = { _id: String(orderId).trim() };

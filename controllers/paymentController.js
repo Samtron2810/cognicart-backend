@@ -5,6 +5,11 @@
 
 const paymentService = require('../services/payments/paymentService');
 const logger = require('../utils/logger');
+// Order model is pre-registered by orderService (required via paymentService dependency chain).
+// These refs are used in paymentCallback to detect Telegram source for redirect routing.
+const mongoose = require('mongoose');
+function getOrderModel() { return mongoose.model('Order'); }
+function getPaymentModel() { return mongoose.model('Payment'); }
 
 /**
  * @route   POST /api/payments/initialize
@@ -65,11 +70,9 @@ async function paymentCallback(req, res) {
   let returnPath = '/checkout';
   if (reference) {
     try {
-      const Payment = require('mongoose').model('Payment');
-      const payment = await Payment.findOne({ reference }).select('orderId sellerId').lean();
+      const payment = await getPaymentModel().findOne({ reference }).select('orderId').lean();
       if (payment) {
-        const Order = require('mongoose').model('Order');
-        const order = await Order.findById(payment.orderId).select('source').lean();
+        const order = await getOrderModel().findById(payment.orderId).select('source').lean();
         if (order && order.source === 'telegram') returnPath = '/checkout/done';
       }
     } catch {

@@ -7,13 +7,15 @@ const router = express.Router();
 const orderController = require('../controllers/orderController');
 const { protect, optionalAuth } = require('../middleware/authMiddleware');
 const { optionalShopper } = require('../middleware/shopperMiddleware');
+const { authLimiter } = require('../middleware/rateLimiter');
 
 // Order checkout can be performed by authenticated seller or customer checkout (optionalAuth)
 router.post('/', optionalAuth, optionalShopper, orderController.createOrder);
 
 // Guest buyer order cancel: verifies ownership by matching email+orderNumber before cancelling.
 // No auth token required — works for buyers who never verified their email.
-router.post('/cancel-guest', orderController.cancelGuestOrder);
+// Rate limited like auth endpoints since it's an email/reference-guessing surface.
+router.post('/cancel-guest', authLimiter, orderController.cancelGuestOrder);
 
 // Protected seller order management. Static/manual routes must precede /:id.
 router.get('/', protect, orderController.getOrders);
