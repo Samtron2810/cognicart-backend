@@ -11,6 +11,10 @@ const { optionalShopper } = require('../middleware/shopperMiddleware');
 // Order checkout can be performed by authenticated seller or customer checkout (optionalAuth)
 router.post('/', optionalAuth, optionalShopper, orderController.createOrder);
 
+// Guest buyer order cancel: verifies ownership by matching email+orderNumber before cancelling.
+// No auth token required — works for buyers who never verified their email.
+router.post('/cancel-guest', orderController.cancelGuestOrder);
+
 // Protected seller order management. Static/manual routes must precede /:id.
 router.get('/', protect, orderController.getOrders);
 router.get('/summary', protect, orderController.getOrderSummary);

@@ -38,5 +38,7 @@ router.get('/me', protectShopper, shopController.getMe);
 router.patch('/me', protectShopper, shopController.updateMe);
 router.get('/me/orders', protectShopper, shopController.getMyOrders);
 router.get('/me/orders/:id', protectShopper, shopController.getMyOrderById);
+// Buyer-initiated cancellation: only unpaid Pending/Confirmed orders, scoped to buyer identity
+router.post('/me/orders/:id/cancel', protectShopper, shopController.cancelMyOrder);
 
 module.exports = router;

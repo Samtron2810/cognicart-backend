@@ -5,6 +5,7 @@
 
 const shopperAuthService = require('../services/shop/shopperAuthService');
 const shopperService = require('../services/shop/shopperService');
+const orderService = require('../services/orders/orderService');
 const { SHOPPER_COOKIE } = require('../middleware/shopperMiddleware');
 const {
   shopperSessionCookieOptions,
@@ -128,6 +129,34 @@ const shopController = {
     try {
       const order = await shopperService.getOrderById(req.shopper, req.params.id);
       res.status(200).json(order);
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /**
+   * @route   POST /api/shop/me/orders/:id/cancel
+   * @desc    Cancel an unpaid Pending/Confirmed storefront order owned by this buyer.
+   *          Paid orders, manual orders, and fulfilled orders are rejected.
+   * @access  Buyer session
+   */
+  async cancelMyOrder(req, res, next) {
+    try {
+      // Resolve and scope the order to this buyer first
+      const existing = await shopperService.getOrderById(req.shopper, req.params.id);
+
+      // Manual orders are not self-cancellable (seller logged them offline)
+      if (existing.source === 'manual') {
+        return res.status(403).json({ success: false, message: 'Manual orders cannot be self-cancelled. Contact the seller.' });
+      }
+
+      // Only cancel if the sellerId is on the order (scope check already done by shopperService)
+      const cancelled = await orderService.cancel(existing.id, existing.sellerId, {
+        cancelledBy: 'buyer',
+        reason: req.body.reason || 'Cancelled by buyer',
+      });
+
+      res.status(200).json(cancelled);
     } catch (error) {
       next(error);
     }

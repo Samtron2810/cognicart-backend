@@ -32,7 +32,7 @@ app.use(express.json({
   limit: '500kb',
   verify: (req, res, buffer) => {
     const path = String(req.originalUrl || '').split('?')[0].replace(/\/$/, '');
-    if (path === '/api/payments/webhook') req.rawBody = Buffer.from(buffer);
+    if (path === '/api/payments/webhook' || path === '/webhooks/paystack') req.rawBody = Buffer.from(buffer);
   },
 }));
 app.use(express.urlencoded({ extended: true, limit: '500kb' }));

@@ -48,11 +48,38 @@ async function verifyPayment(req, res, next) {
 /**
  * Browser return target used by both storefront and Telegram hosted checkout.
  * Verification happens server-to-server before the buyer is redirected home.
+ *
+ * - Storefront orders  → /checkout?payment=...&reference=...
+ * - Telegram orders    → /checkout/done?payment=...&reference=...
+ *   (lighter page, no cart/header/footer — works cleanly in Telegram mini browser)
+ *
+ * The reference is always forwarded so the frontend can call
+ * GET /api/payments/verify/:reference as a safety net (idempotent).
  */
 async function paymentCallback(req, res) {
   const reference = String(req.query.reference || req.query.trxref || '').trim();
   const client = String(process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
-  const target = new URL('/checkout', client);
+
+  // Determine redirect path by order source before verifying.
+  // Default to storefront path; switch to /checkout/done for Telegram.
+  let returnPath = '/checkout';
+  if (reference) {
+    try {
+      const Payment = require('mongoose').model('Payment');
+      const payment = await Payment.findOne({ reference }).select('orderId sellerId').lean();
+      if (payment) {
+        const Order = require('mongoose').model('Order');
+        const order = await Order.findById(payment.orderId).select('source').lean();
+        if (order && order.source === 'telegram') returnPath = '/checkout/done';
+      }
+    } catch {
+      // Non-critical: fall back to /checkout if lookup fails
+    }
+  }
+
+  const target = new URL(returnPath, client);
+
+  // Always include reference — frontend uses it for client-side safety-net verify.
   if (reference) target.searchParams.set('reference', reference);
 
   try {

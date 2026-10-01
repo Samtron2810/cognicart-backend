@@ -154,6 +154,64 @@ async function getOrderSummary(req, res, next) {
 }
 
 /**
+ * @route   POST /api/orders/cancel-guest
+ * @desc    Allow a guest buyer (no session) to cancel their own unpaid order
+ *          by proving ownership via email + order reference (orderNumber or id).
+ *          Only works for automatic (storefront/telegram) unpaid Pending/Confirmed orders.
+ * @access  Public
+ * @body    { email: string, orderId: string }  — orderId can be ObjectId or "#00012"
+ */
+async function cancelGuestOrder(req, res, next) {
+  try {
+    const { email, orderId } = req.body;
+    if (!email || !orderId) {
+      return res.status(400).json({ success: false, message: 'email and orderId are required' });
+    }
+
+    const cleanEmail = String(email).trim().toLowerCase();
+    const Order = require('mongoose').model('Order');
+
+    // Resolve order by ObjectId or human reference
+    const mongoose = require('mongoose');
+    let orderQuery;
+    if (mongoose.isValidObjectId(String(orderId).trim())) {
+      orderQuery = { _id: String(orderId).trim() };
+    } else {
+      const num = String(orderId).trim().replace(/^#/, '');
+      if (!/^\d+$/.test(num)) {
+        return res.status(404).json({ success: false, message: 'Order not found' });
+      }
+      orderQuery = { orderNumber: Number(num) };
+    }
+
+    const order = await Order.findOne(orderQuery);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    // Ownership check: email must match the order's customerEmail
+    if (!order.customerEmail || order.customerEmail !== cleanEmail) {
+      // Deliberately vague — do not confirm the order exists for this email
+      return res.status(404).json({ success: false, message: 'Order not found or email does not match' });
+    }
+
+    // Manual orders are not self-cancellable
+    if (order.source === 'manual') {
+      return res.status(403).json({ success: false, message: 'This order cannot be self-cancelled. Contact the seller.' });
+    }
+
+    const cancelled = await orderService.cancel(order._id.toString(), order.sellerId, {
+      cancelledBy: 'buyer',
+      reason: 'Cancelled by buyer (guest)',
+    });
+
+    res.status(200).json(cancelled);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
  * Generate copyable text and an Ordaflow-style pre-filled wa.me link. This is
  * ordinary client-side sharing: no Meta API, token, webhook, or background send.
  */
@@ -173,6 +231,7 @@ module.exports = {
   getOrders,
   getOrderById,
   createOrder,
+  cancelGuestOrder,
   updateOrderStatus,
   createManualOrder,
   updateManualOrder,

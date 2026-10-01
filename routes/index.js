@@ -24,6 +24,8 @@ const campaignRoutes = require('./campaignRoutes');
 const storefrontRoutes = require('./storefrontRoutes');
 const shopRoutes = require('./shopRoutes');
 const telegramRoutes = require('./telegramRoutes');
+const { verifyPaystackSignature } = require('../middleware/webhookMiddleware');
+const paymentController = require('../controllers/paymentController');
 
 // Root & System Health
 router.use('/', rootRoutes);
@@ -36,6 +38,10 @@ router.use(['/api', '/webhooks'], requireDatabase);
 
 // Feature APIs
 router.use('/', telegramRoutes);
+
+// Paystack webhook alias — some integrations send to /webhooks/paystack instead of /api/payments/webhook.
+// rawBody capture in server.js also guards this path.
+router.post('/webhooks/paystack', verifyPaystackSignature, paymentController.handlePaystackWebhook);
 router.use('/api/auth', authRoutes);
 router.use('/api/sellers', sellerRoutes);
 router.use('/api/business', sellerRoutes); // Direct mount for businessService compatibility

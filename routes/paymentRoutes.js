@@ -18,7 +18,7 @@ router.get('/callback', paymentController.paymentCallback);
 router.post('/verify/:reference', paymentController.verifyPayment);
 router.get('/verify/:reference', paymentController.verifyPayment);
 
-// Webhook listener
+// Webhook listener — primary path registered in Paystack dashboard.
 router.post('/webhook', verifyPaystackSignature, paymentController.handlePaystackWebhook);
 
 // Transaction inspection
