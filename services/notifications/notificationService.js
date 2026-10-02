@@ -18,6 +18,11 @@ const EVENTS = Object.freeze({
   PAYMENT_RECEIVED: 'payment.received',
   ORDER_STATUS_CHANGED: 'order.status_changed',
   BUYER_OTP: 'buyer.otp',
+  SELLER_WELCOME: 'seller.welcome',
+  SELLER_EMAIL_VERIFICATION: 'seller.email_verification',
+  SELLER_PASSWORD_RESET: 'seller.password_reset',
+  SELLER_PASSWORD_CHANGED: 'seller.password_changed',
+  SELLER_ACCOUNT_STATUS: 'seller.account_status',
 });
 
 function normalizedEmail(value) {
@@ -217,6 +222,81 @@ const notificationService = {
       business: {},
       rendered: templates.buyerOtp({ code, expiresInMinutes }),
       tags: ['authentication'],
+    });
+  },
+
+  /** Sent once, right after a seller account is created. */
+  async sendSellerWelcome({ email, businessName, verifyUrl = '' }) {
+    const to = normalizedEmail(email);
+    if (!to) return skipped(EVENTS.SELLER_WELCOME, 'destination_missing');
+
+    return dispatchEmail({
+      event: EVENTS.SELLER_WELCOME,
+      to,
+      toName: businessName,
+      business: {},
+      rendered: templates.sellerWelcome({ businessName, verifyUrl }),
+      tags: ['seller-lifecycle'],
+    });
+  },
+
+  /** Verify-email link for a seller account. */
+  async sendSellerEmailVerification({ email, businessName, verifyUrl, expiresInMinutes = 60 }) {
+    const to = normalizedEmail(email);
+    if (!to) return skipped(EVENTS.SELLER_EMAIL_VERIFICATION, 'destination_missing');
+
+    return dispatchEmail({
+      event: EVENTS.SELLER_EMAIL_VERIFICATION,
+      to,
+      toName: businessName,
+      business: {},
+      rendered: templates.sellerEmailVerification({ businessName, verifyUrl, expiresInMinutes }),
+      tags: ['authentication'],
+    });
+  },
+
+  /** Forgot-password reset link for a seller account. */
+  async sendSellerPasswordReset({ email, businessName, resetUrl, expiresInMinutes = 30 }) {
+    const to = normalizedEmail(email);
+    if (!to) return skipped(EVENTS.SELLER_PASSWORD_RESET, 'destination_missing');
+
+    return dispatchEmail({
+      event: EVENTS.SELLER_PASSWORD_RESET,
+      to,
+      toName: businessName,
+      business: {},
+      rendered: templates.sellerPasswordReset({ businessName, resetUrl, expiresInMinutes }),
+      tags: ['authentication'],
+    });
+  },
+
+  /** Security notice after a successful password change/reset. */
+  async sendSellerPasswordChanged({ email, businessName }) {
+    const to = normalizedEmail(email);
+    if (!to) return skipped(EVENTS.SELLER_PASSWORD_CHANGED, 'destination_missing');
+
+    return dispatchEmail({
+      event: EVENTS.SELLER_PASSWORD_CHANGED,
+      to,
+      toName: businessName,
+      business: {},
+      rendered: templates.sellerPasswordChanged({ businessName }),
+      tags: ['authentication'],
+    });
+  },
+
+  /** Admin suspended/reactivated a seller account. */
+  async sendSellerAccountStatus({ email, businessName, isActive }) {
+    const to = normalizedEmail(email);
+    if (!to) return skipped(EVENTS.SELLER_ACCOUNT_STATUS, 'destination_missing');
+
+    return dispatchEmail({
+      event: EVENTS.SELLER_ACCOUNT_STATUS,
+      to,
+      toName: businessName,
+      business: {},
+      rendered: templates.sellerAccountStatus({ businessName, isActive }),
+      tags: ['seller-lifecycle'],
     });
   },
 

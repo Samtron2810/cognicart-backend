@@ -5,13 +5,34 @@
  */
 
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const User = require('../../models/User');
 const Business = require('../../models/Business');
+const SellerAuthToken = require('../../models/SellerAuthToken');
 const { generateToken } = require('../../utils/generateToken');
 const { isEmail, isStrongPassword, isNigerianPhone, normalizePhone, sanitize } = require('../../utils/validators');
 const logger = require('../../utils/logger');
 
 const VALID_ROLES = ['seller', 'admin', 'platform_owner'];
+
+const VERIFY_TTL_MS = 60 * 60 * 1000; // 1 hour
+const RESET_TTL_MS = 30 * 60 * 1000; // 30 minutes
+const RESET_RESEND_COOLDOWN_MS = 60 * 1000;
+
+const SECRET = process.env.JWT_SECRET || 'wabac_jwt_super_secret_dev_key_2026';
+
+function hashSecret(value) {
+  return crypto.createHmac('sha256', SECRET).update(String(value)).digest('hex');
+}
+
+function clientUrl() {
+  return (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
+}
+
+function getNotificationService() {
+  // Lazy to avoid any load-order cycle with other services.
+  return require('../notifications/notificationService');
+}
 
 function badRequest(message, statusCode = 400) {
   const err = new Error(message);
@@ -128,7 +149,191 @@ const authService = {
     const seller = user.toJSON();
 
     logger.info('Seller registered successfully:', { id: user._id.toString(), email: user.email });
+
+    // Side effects only: account creation must succeed even if email fails.
+    this.sendWelcomeAndVerification(user).catch((error) => {
+      logger.warn('Could not send seller welcome/verification email:', {
+        id: user._id.toString(),
+        error: error.message,
+      });
+    });
+
     return { token, seller };
+  },
+
+  /**
+   * Issue a verify-email challenge and send the combined welcome + verify
+   * email. Called right after registration and from the resend endpoint.
+   */
+  async sendWelcomeAndVerification(user) {
+    const rawToken = crypto.randomBytes(32).toString('hex');
+
+    await SellerAuthToken.create({
+      userId: user._id,
+      email: user.email,
+      purpose: 'verify_email',
+      tokenHash: hashSecret(rawToken),
+      expiresAt: new Date(Date.now() + VERIFY_TTL_MS),
+    });
+
+    const verifyUrl = `${clientUrl()}/verify-email?t=${rawToken}`;
+
+    return getNotificationService().sendSellerWelcome({
+      email: user.email,
+      businessName: user.businessName,
+      verifyUrl,
+    });
+  },
+
+  /**
+   * Resend the verify-email link. Response is always generic so this cannot
+   * be used to enumerate registered addresses.
+   */
+  async resendVerificationEmail(email) {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const genericResponse = {
+      success: true,
+      message: 'If that email belongs to an account needing verification, a new link is on its way.',
+    };
+    if (!isEmail(cleanEmail)) return genericResponse;
+
+    const user = await User.findOne({ email: cleanEmail });
+    if (!user || user.isEmailVerified) return genericResponse;
+
+    await SellerAuthToken.deleteMany({ userId: user._id, purpose: 'verify_email', usedAt: null });
+    const rawToken = crypto.randomBytes(32).toString('hex');
+
+    await SellerAuthToken.create({
+      userId: user._id,
+      email: user.email,
+      purpose: 'verify_email',
+      tokenHash: hashSecret(rawToken),
+      expiresAt: new Date(Date.now() + VERIFY_TTL_MS),
+    });
+
+    const verifyUrl = `${clientUrl()}/verify-email?t=${rawToken}`;
+
+    await getNotificationService().sendSellerEmailVerification({
+      email: user.email,
+      businessName: user.businessName,
+      verifyUrl,
+      expiresInMinutes: Math.floor(VERIFY_TTL_MS / 60000),
+    });
+
+    return genericResponse;
+  },
+
+  /**
+   * Redeem a verify-email token. Single use.
+   */
+  async verifyEmail(rawToken) {
+    const token = String(rawToken || '').trim();
+    if (!token) throw badRequest('Verification token is required');
+
+    const challenge = await SellerAuthToken.findOne({
+      purpose: 'verify_email',
+      tokenHash: hashSecret(token),
+    });
+
+    if (!challenge) throw badRequest('This verification link is not valid', 401);
+    if (challenge.usedAt) throw badRequest('This link has already been used', 401);
+    if (challenge.expiresAt.getTime() < Date.now()) throw badRequest('This verification link has expired', 401);
+
+    const user = await User.findById(challenge.userId);
+    if (!user) throw badRequest('Seller not found', 404);
+
+    challenge.usedAt = new Date();
+    await challenge.save();
+
+    user.isEmailVerified = true;
+    await user.save();
+
+    logger.info('Seller email verified:', { id: user._id.toString() });
+    return user.toJSON();
+  },
+
+  /**
+   * Issue a password-reset challenge. Response is always generic so this
+   * cannot be used to enumerate registered addresses.
+   */
+  async forgotPassword(email) {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const genericResponse = {
+      success: true,
+      message: 'If that email is registered, a password reset link is on its way.',
+    };
+    if (!isEmail(cleanEmail)) return genericResponse;
+
+    const user = await User.findOne({ email: cleanEmail });
+    if (!user) return genericResponse;
+
+    const recent = await SellerAuthToken.findOne({
+      userId: user._id,
+      purpose: 'reset_password',
+      usedAt: null,
+      createdAt: { $gt: new Date(Date.now() - RESET_RESEND_COOLDOWN_MS) },
+    }).sort({ createdAt: -1 });
+    if (recent) return genericResponse;
+
+    await SellerAuthToken.deleteMany({ userId: user._id, purpose: 'reset_password', usedAt: null });
+    const rawToken = crypto.randomBytes(32).toString('hex');
+
+    await SellerAuthToken.create({
+      userId: user._id,
+      email: user.email,
+      purpose: 'reset_password',
+      tokenHash: hashSecret(rawToken),
+      expiresAt: new Date(Date.now() + RESET_TTL_MS),
+    });
+
+    const resetUrl = `${clientUrl()}/reset-password?t=${rawToken}`;
+
+    await getNotificationService().sendSellerPasswordReset({
+      email: user.email,
+      businessName: user.businessName,
+      resetUrl,
+      expiresInMinutes: Math.floor(RESET_TTL_MS / 60000),
+    });
+
+    return genericResponse;
+  },
+
+  /**
+   * Redeem a password-reset token and set a new password. Single use.
+   */
+  async resetPassword({ token: rawToken, password }) {
+    const token = String(rawToken || '').trim();
+    if (!token) throw badRequest('Reset token is required');
+    if (!isStrongPassword(password)) {
+      throw badRequest('Password must be at least 8 characters and contain at least one uppercase letter and one number');
+    }
+
+    const challenge = await SellerAuthToken.findOne({
+      purpose: 'reset_password',
+      tokenHash: hashSecret(token),
+    });
+
+    if (!challenge) throw badRequest('This reset link is not valid', 401);
+    if (challenge.usedAt) throw badRequest('This reset link has already been used. Request a new one.', 401);
+    if (challenge.expiresAt.getTime() < Date.now()) throw badRequest('This reset link has expired. Request a new one.', 401);
+
+    const user = await User.findById(challenge.userId).select('+password');
+    if (!user) throw badRequest('Seller not found', 404);
+
+    challenge.usedAt = new Date();
+    await challenge.save();
+
+    user.password = password;
+    await user.save();
+
+    logger.info('Seller password reset:', { id: user._id.toString() });
+
+    getNotificationService()
+      .sendSellerPasswordChanged({ email: user.email, businessName: user.businessName })
+      .catch((error) => logger.warn('Could not send password-changed notice:', { error: error.message }));
+
+    const token2 = generateToken({ id: user._id.toString(), email: user.email, role: user.role });
+    return { token: token2, seller: user.toJSON() };
   },
 
   /**

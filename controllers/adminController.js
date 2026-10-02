@@ -13,6 +13,7 @@ const Business = require('../models/Business');
 const mongoose = require('mongoose');
 const paymentService = require('../services/payments/paymentService');
 const payoutService = require('../services/payouts/payoutService');
+const notificationService = require('../services/notifications/notificationService');
 const logger = require('../utils/logger');
 
 /**
@@ -191,6 +192,12 @@ const adminController = {
       }
 
       logger.info('Seller active status toggled (Admin):', { id, isActive: activeBool });
+
+      // Side effect only: the status change is already durable.
+      notificationService
+        .sendSellerAccountStatus({ email: user.email, businessName: user.businessName, isActive: activeBool })
+        .catch((error) => logger.warn('Could not send seller account-status email:', { id, error: error.message }));
+
       res.status(200).json(user.toJSON());
     } catch (error) {
       next(error);

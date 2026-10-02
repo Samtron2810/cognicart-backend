@@ -78,9 +78,75 @@ function logout(req, res) {
   });
 }
 
+/**
+ * @route   POST /api/auth/resend-verification
+ * @desc    Resend the verify-email link
+ * @access  Public
+ */
+async function resendVerification(req, res, next) {
+  try {
+    const { email } = req.body;
+    const result = await authService.resendVerificationEmail(email);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * @route   GET /api/auth/verify-email?token=...
+ * @desc    Redeem a verify-email token
+ * @access  Public
+ */
+async function verifyEmail(req, res, next) {
+  try {
+    const token = req.query.token || req.body.token;
+    const seller = await authService.verifyEmail(token);
+    res.status(200).json({ success: true, seller });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * @route   POST /api/auth/forgot-password
+ * @desc    Request a password-reset link
+ * @access  Public
+ */
+async function forgotPassword(req, res, next) {
+  try {
+    const { email } = req.body;
+    const result = await authService.forgotPassword(email);
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * @route   POST /api/auth/reset-password
+ * @desc    Redeem a reset token and set a new password
+ * @access  Public
+ */
+async function resetPassword(req, res, next) {
+  try {
+    const { token, password } = req.body;
+    const result = await authService.resetPassword({ token, password });
+
+    res.cookie('token', result.token, sellerSessionCookieOptions());
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   register,
   login,
   getMe,
   logout,
+  resendVerification,
+  verifyEmail,
+  forgotPassword,
+  resetPassword,
 };

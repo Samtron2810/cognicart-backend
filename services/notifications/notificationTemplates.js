@@ -185,6 +185,95 @@ function buyerOtp({ code, expiresInMinutes = 10 }) {
   };
 }
 
+function sellerWelcome({ businessName, verifyUrl }) {
+  return {
+    subject: 'Welcome to Cognicart 🎉',
+    text: [
+      `Hi ${businessName || 'there'}, welcome to Cognicart!`,
+      'Your seller account is ready. Connect your Telegram bot, add products, and start selling.',
+      ...(verifyUrl ? ['', `Verify your email to unlock everything: ${verifyUrl}`] : []),
+    ].join('\n'),
+    html: emailHtml({
+      preheader: 'Your Cognicart seller account is ready',
+      heading: 'Welcome to Cognicart',
+      intro: `Hi ${businessName || 'there'}, your seller account is ready. Connect your Telegram bot, add products, and start selling across Telegram and your storefront.`,
+      body: verifyUrl ? ['Please verify your email address to unlock the full dashboard.'] : [],
+      action: verifyUrl ? { label: 'Verify your email', url: verifyUrl } : null,
+    }),
+  };
+}
+
+function sellerEmailVerification({ businessName, verifyUrl, expiresInMinutes = 60 }) {
+  return {
+    subject: 'Verify your Cognicart email address',
+    text: [
+      `Hi ${businessName || 'there'}, confirm your email to finish setting up your Cognicart account.`,
+      `Verify here: ${verifyUrl}`,
+      `This link expires in ${expiresInMinutes} minutes.`,
+      'If you did not create this account, you can ignore this email.',
+    ].join('\n'),
+    html: emailHtml({
+      preheader: 'Confirm your email address',
+      heading: 'Verify your email',
+      intro: `Hi ${businessName || 'there'}, confirm your email to finish setting up your Cognicart account.`,
+      body: [`This link expires in ${expiresInMinutes} minutes.`, 'If you did not create this account, you can safely ignore this email.'],
+      action: { label: 'Verify email', url: verifyUrl },
+    }),
+  };
+}
+
+function sellerPasswordReset({ businessName, resetUrl, expiresInMinutes = 30 }) {
+  return {
+    subject: 'Reset your Cognicart password',
+    text: [
+      `Hi ${businessName || 'there'}, we received a request to reset your Cognicart password.`,
+      `Reset it here: ${resetUrl}`,
+      `This link expires in ${expiresInMinutes} minutes.`,
+      'If you did not request this, you can ignore this email — your password will stay the same.',
+    ].join('\n'),
+    html: emailHtml({
+      preheader: 'Reset your password',
+      heading: 'Reset your password',
+      intro: `Hi ${businessName || 'there'}, we received a request to reset your Cognicart password.`,
+      body: [`This link expires in ${expiresInMinutes} minutes.`, 'If you did not request this, you can ignore this email — your password will stay the same.'],
+      action: { label: 'Reset password', url: resetUrl },
+    }),
+  };
+}
+
+function sellerPasswordChanged({ businessName }) {
+  return {
+    subject: 'Your Cognicart password was changed',
+    text: [
+      `Hi ${businessName || 'there'}, your Cognicart account password was just changed.`,
+      'If this was not you, contact platform support immediately.',
+    ].join('\n'),
+    html: emailHtml({
+      preheader: 'Your password was changed',
+      heading: 'Password changed',
+      intro: `Hi ${businessName || 'there'}, your Cognicart account password was just changed.`,
+      body: ['If this was not you, contact platform support immediately.'],
+    }),
+  };
+}
+
+function sellerAccountStatus({ businessName, isActive }) {
+  const heading = isActive ? 'Your account has been reactivated' : 'Your account has been suspended';
+  const explanation = isActive
+    ? 'You can log in and continue selling on Cognicart.'
+    : 'Your dashboard access has been paused by the platform team. Contact support for more information.';
+  return {
+    subject: heading,
+    text: [`Hi ${businessName || 'there'},`, explanation].join('\n'),
+    html: emailHtml({
+      preheader: heading,
+      heading,
+      intro: `Hi ${businessName || 'there'},`,
+      body: [explanation],
+    }),
+  };
+}
+
 module.exports = {
   escapeHtml,
   money,
@@ -193,4 +282,9 @@ module.exports = {
   paymentReceipt,
   orderStatus,
   buyerOtp,
+  sellerWelcome,
+  sellerEmailVerification,
+  sellerPasswordReset,
+  sellerPasswordChanged,
+  sellerAccountStatus,
 };
