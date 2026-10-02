@@ -2,11 +2,13 @@
  * Seller Authentication Challenge Model
  *
  * Backs two seller-account email flows:
- *   - purpose 'verify_email' -> single-use link sent after registration
+ *   - purpose 'verify_email'   -> 6 digit one-time code sent after registration
  *   - purpose 'reset_password' -> single-use link sent from "Forgot password"
  *
- * Only a hash of the raw token is ever stored, and documents self-destruct
- * through a TTL index on `expiresAt`. Mirrors the ShopperAuthToken pattern.
+ * Only a hash of the raw secret is ever stored (for codes the hash covers
+ * `email:code`, so a code is worthless against a different address), and
+ * documents self-destruct through a TTL index on `expiresAt`. Mirrors the
+ * ShopperAuthToken pattern.
  */
 
 const mongoose = require('mongoose');
@@ -34,6 +36,12 @@ const sellerAuthTokenSchema = new mongoose.Schema(
       type: String,
       required: true,
       index: true,
+    },
+    // Brute-force budget for the 'verify_email' code challenge. Unused by the
+    // link-based 'reset_password' purpose.
+    attempts: {
+      type: Number,
+      default: 0,
     },
     usedAt: {
       type: Date,

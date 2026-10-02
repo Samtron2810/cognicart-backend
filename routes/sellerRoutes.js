@@ -5,11 +5,11 @@
 const express = require('express');
 const router = express.Router();
 const sellerController = require('../controllers/sellerController');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, requireVerifiedEmail } = require('../middleware/authMiddleware');
 
 // Authenticated seller business profile management
 router.get('/', protect, sellerController.getBusiness);
-router.patch('/', protect, sellerController.updateBusiness);
+router.patch('/', protect, requireVerifiedEmail, sellerController.updateBusiness);
 router.get('/profile', protect, sellerController.getBusiness);
 
 // Public storefront profile endpoints

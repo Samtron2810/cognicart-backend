@@ -5,7 +5,7 @@
 const express = require('express');
 const router = express.Router();
 const orderController = require('../controllers/orderController');
-const { protect, optionalAuth } = require('../middleware/authMiddleware');
+const { protect, optionalAuth, requireVerifiedEmail } = require('../middleware/authMiddleware');
 const { optionalShopper } = require('../middleware/shopperMiddleware');
 const { authLimiter } = require('../middleware/rateLimiter');
 
@@ -18,14 +18,14 @@ router.post('/', optionalAuth, optionalShopper, orderController.createOrder);
 router.post('/cancel-guest', authLimiter, orderController.cancelGuestOrder);
 
 // Protected seller order management. Static/manual routes must precede /:id.
-router.get('/', protect, orderController.getOrders);
-router.get('/summary', protect, orderController.getOrderSummary);
-router.post('/manual', protect, orderController.createManualOrder);
-router.patch('/manual/:id', protect, orderController.updateManualOrder);
-router.patch('/manual/:id/payment', protect, orderController.updateManualOrderPayment);
-router.get('/:id/share', protect, orderController.getOrderShare);
-router.get('/:id', protect, orderController.getOrderById);
-router.patch('/:id', protect, orderController.updateOrderStatus);
-router.patch('/:id/status', protect, orderController.updateOrderStatus);
+router.get('/', protect, requireVerifiedEmail, orderController.getOrders);
+router.get('/summary', protect, requireVerifiedEmail, orderController.getOrderSummary);
+router.post('/manual', protect, requireVerifiedEmail, orderController.createManualOrder);
+router.patch('/manual/:id', protect, requireVerifiedEmail, orderController.updateManualOrder);
+router.patch('/manual/:id/payment', protect, requireVerifiedEmail, orderController.updateManualOrderPayment);
+router.get('/:id/share', protect, requireVerifiedEmail, orderController.getOrderShare);
+router.get('/:id', protect, requireVerifiedEmail, orderController.getOrderById);
+router.patch('/:id', protect, requireVerifiedEmail, orderController.updateOrderStatus);
+router.patch('/:id/status', protect, requireVerifiedEmail, orderController.updateOrderStatus);
 
 module.exports = router;

@@ -15,7 +15,9 @@ const logger = require('../../utils/logger');
 
 const VALID_ROLES = ['seller', 'admin', 'platform_owner'];
 
-const VERIFY_TTL_MS = 60 * 60 * 1000; // 1 hour
+const VERIFY_TTL_MS = 10 * 60 * 1000; // one-time code is valid for 10 minutes
+const VERIFY_RESEND_COOLDOWN_MS = 60 * 1000; // one code per account per minute
+const VERIFY_MAX_ATTEMPTS = 5; // wrong-code budget before the code is burned
 const RESET_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const RESET_RESEND_COOLDOWN_MS = 60 * 1000;
 
@@ -23,6 +25,28 @@ const SECRET = process.env.JWT_SECRET || 'wabac_jwt_super_secret_dev_key_2026';
 
 function hashSecret(value) {
   return crypto.createHmac('sha256', SECRET).update(String(value)).digest('hex');
+}
+
+/**
+ * Mirrors SHOP_OTP_DEBUG for the buyer flow: when enabled the generated code is
+ * returned by the API so signup can be exercised without a mail provider.
+ * Never enable this outside local development.
+ */
+function verifyOtpDebugEnabled() {
+  return process.env.SELLER_OTP_DEBUG === 'true';
+}
+
+/** Six digit code, uniform over 100000-999999. */
+function generateOtpCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+
+/**
+ * Bind the code to the destination address so a code issued for one account can
+ * never be replayed against another.
+ */
+function hashOtp(email, code) {
+  return hashSecret(`${email}:${code}`);
 }
 
 function clientUrl() {
@@ -78,10 +102,11 @@ function normalizeSignupPayload({ businessName, email, password, phone }) {
 const authService = {
   /**
    * Create a user account together with its default business profile.
-   * `role` is trusted here, so this must only be called by server-side code
-   * (registration endpoint, provisioning CLI, tests) - never with user input.
+   * `role` and `isEmailVerified` are trusted here, so this must only be called
+   * by server-side code (registration endpoint, provisioning CLI, tests) -
+   * never with user input.
    */
-  async createAccount({ businessName, email, password, phone, role = 'seller' }) {
+  async createAccount({ businessName, email, password, phone, role = 'seller', isEmailVerified = false }) {
     const { cleanName, cleanEmail, cleanPhone } = normalizeSignupPayload({
       businessName,
       email,
@@ -107,6 +132,9 @@ const authService = {
         phone: cleanPhone,
         role,
         isActive: true,
+        // Provisioned accounts (admin CLI) skip the signup OTP, so the caller
+        // decides. Self-service registration always leaves this false.
+        isEmailVerified: isEmailVerified === true,
       });
     } catch (error) {
       // Unique index race condition on email
@@ -162,94 +190,154 @@ const authService = {
   },
 
   /**
-   * Issue a verify-email challenge and send the combined welcome + verify
-   * email. Called right after registration and from the resend endpoint.
+   * Issue a verify-email one-time code and send the combined welcome + code
+   * email. Called right after registration.
    */
   async sendWelcomeAndVerification(user) {
-    const rawToken = crypto.randomBytes(32).toString('hex');
+    const code = generateOtpCode();
 
+    await SellerAuthToken.deleteMany({ userId: user._id, purpose: 'verify_email' });
     await SellerAuthToken.create({
       userId: user._id,
       email: user.email,
       purpose: 'verify_email',
-      tokenHash: hashSecret(rawToken),
+      tokenHash: hashOtp(user.email, code),
       expiresAt: new Date(Date.now() + VERIFY_TTL_MS),
     });
 
-    const verifyUrl = `${clientUrl()}/verify-email?t=${rawToken}`;
-
-    return getNotificationService().sendSellerWelcome({
+    const result = await getNotificationService().sendSellerWelcome({
       email: user.email,
       businessName: user.businessName,
-      verifyUrl,
+      code,
+      expiresInMinutes: Math.floor(VERIFY_TTL_MS / 60000),
     });
+
+    if (verifyOtpDebugEnabled()) {
+      logger.warn('SELLER_OTP_DEBUG is on - verification code logged:', { email: user.email, code });
+    }
+
+    return result;
   },
 
   /**
-   * Resend the verify-email link. Response is always generic so this cannot
+   * Resend the verify-email code. Response is always generic so this cannot
    * be used to enumerate registered addresses.
    */
   async resendVerificationEmail(email) {
     const cleanEmail = (email || '').trim().toLowerCase();
     const genericResponse = {
       success: true,
-      message: 'If that email belongs to an account needing verification, a new link is on its way.',
+      message: 'If that email belongs to an account needing verification, a new code is on its way.',
+      expiresInSeconds: Math.floor(VERIFY_TTL_MS / 1000),
+      resendAfterSeconds: Math.floor(VERIFY_RESEND_COOLDOWN_MS / 1000),
     };
     if (!isEmail(cleanEmail)) return genericResponse;
 
     const user = await User.findOne({ email: cleanEmail });
     if (!user || user.isEmailVerified) return genericResponse;
 
-    await SellerAuthToken.deleteMany({ userId: user._id, purpose: 'verify_email', usedAt: null });
-    const rawToken = crypto.randomBytes(32).toString('hex');
+    // Cooldown is enforced silently: a throttled caller still gets the generic
+    // response, so timing cannot be used to probe for accounts.
+    const recent = await SellerAuthToken.findOne({
+      userId: user._id,
+      purpose: 'verify_email',
+      usedAt: null,
+      createdAt: { $gt: new Date(Date.now() - VERIFY_RESEND_COOLDOWN_MS) },
+    }).sort({ createdAt: -1 });
+    if (recent) return genericResponse;
+
+    await SellerAuthToken.deleteMany({ userId: user._id, purpose: 'verify_email' });
+    const code = generateOtpCode();
 
     await SellerAuthToken.create({
       userId: user._id,
       email: user.email,
       purpose: 'verify_email',
-      tokenHash: hashSecret(rawToken),
+      tokenHash: hashOtp(user.email, code),
       expiresAt: new Date(Date.now() + VERIFY_TTL_MS),
     });
-
-    const verifyUrl = `${clientUrl()}/verify-email?t=${rawToken}`;
 
     await getNotificationService().sendSellerEmailVerification({
       email: user.email,
       businessName: user.businessName,
-      verifyUrl,
+      code,
       expiresInMinutes: Math.floor(VERIFY_TTL_MS / 60000),
     });
+
+    if (verifyOtpDebugEnabled()) {
+      genericResponse.devCode = code;
+    }
 
     return genericResponse;
   },
 
   /**
-   * Redeem a verify-email token. Single use.
+   * Redeem a verify-email one-time code. Single use, attempt limited, and
+   * bound to the exact email address the code was issued for.
+   *
+   * Returns a fresh session so a seller who verifies from a different device
+   * than the one they signed up on ends up logged in.
    */
-  async verifyEmail(rawToken) {
-    const token = String(rawToken || '').trim();
-    if (!token) throw badRequest('Verification token is required');
+  async verifyEmailOtp({ email, code }) {
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const cleanCode = String(code || '').trim();
+
+    if (!isEmail(cleanEmail)) throw badRequest('A valid email address is required');
+    if (!cleanCode) throw badRequest('Verification code is required');
+    if (!/^\d{6}$/.test(cleanCode)) throw badRequest('Verification code must be 6 digits');
 
     const challenge = await SellerAuthToken.findOne({
+      email: cleanEmail,
       purpose: 'verify_email',
-      tokenHash: hashSecret(token),
-    });
+      usedAt: null,
+    }).sort({ createdAt: -1 });
 
-    if (!challenge) throw badRequest('This verification link is not valid', 401);
-    if (challenge.usedAt) throw badRequest('This link has already been used', 401);
-    if (challenge.expiresAt.getTime() < Date.now()) throw badRequest('This verification link has expired', 401);
+    // Unknown address and no outstanding code look identical on purpose.
+    if (!challenge) throw badRequest('That code is not valid. Please request a new one.', 401);
+
+    if (challenge.expiresAt.getTime() < Date.now()) {
+      await SellerAuthToken.deleteOne({ _id: challenge._id });
+      throw badRequest('That code has expired. Please request a new one.', 401);
+    }
+
+    if (challenge.attempts >= VERIFY_MAX_ATTEMPTS) {
+      await SellerAuthToken.deleteOne({ _id: challenge._id });
+      throw badRequest('Too many incorrect attempts. Please request a new code.', 429);
+    }
+
+    if (challenge.tokenHash !== hashOtp(cleanEmail, cleanCode)) {
+      challenge.attempts += 1;
+      await challenge.save();
+      const left = Math.max(VERIFY_MAX_ATTEMPTS - challenge.attempts, 0);
+      throw badRequest(
+        left > 0
+          ? `Incorrect verification code. ${left} attempt${left === 1 ? '' : 's'} left.`
+          : 'Incorrect verification code. Please request a new one.',
+        401
+      );
+    }
 
     const user = await User.findById(challenge.userId);
     if (!user) throw badRequest('Seller not found', 404);
 
     challenge.usedAt = new Date();
     await challenge.save();
+    // Burn every other outstanding code for this account.
+    await SellerAuthToken.deleteMany({
+      userId: user._id,
+      purpose: 'verify_email',
+      _id: { $ne: challenge._id },
+    });
 
-    user.isEmailVerified = true;
-    await user.save();
+    if (!user.isEmailVerified) {
+      user.isEmailVerified = true;
+      await user.save();
+    }
 
     logger.info('Seller email verified:', { id: user._id.toString() });
-    return user.toJSON();
+
+    const token = generateToken({ id: user._id.toString(), email: user.email, role: user.role });
+    return { token, seller: user.toJSON() };
   },
 
   /**

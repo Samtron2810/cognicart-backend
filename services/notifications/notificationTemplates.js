@@ -185,39 +185,56 @@ function buyerOtp({ code, expiresInMinutes = 10 }) {
   };
 }
 
-function sellerWelcome({ businessName, verifyUrl }) {
+function sellerWelcome({ businessName, code, expiresInMinutes = 10 }) {
   return {
-    subject: 'Welcome to Cognicart 🎉',
+    subject: 'Welcome to Cognicart 🎉 - your verification code',
     text: [
       `Hi ${businessName || 'there'}, welcome to Cognicart!`,
       'Your seller account is ready. Connect your Telegram bot, add products, and start selling.',
-      ...(verifyUrl ? ['', `Verify your email to unlock everything: ${verifyUrl}`] : []),
+      ...(code
+        ? [
+            '',
+            `Your email verification code is ${code}.`,
+            `It expires in ${expiresInMinutes} minutes.`,
+            'Enter it on the verification screen to unlock the full dashboard.',
+          ]
+        : []),
     ].join('\n'),
     html: emailHtml({
-      preheader: 'Your Cognicart seller account is ready',
+      preheader: code ? `Your verification code is ${code}` : 'Your Cognicart seller account is ready',
       heading: 'Welcome to Cognicart',
       intro: `Hi ${businessName || 'there'}, your seller account is ready. Connect your Telegram bot, add products, and start selling across Telegram and your storefront.`,
-      body: verifyUrl ? ['Please verify your email address to unlock the full dashboard.'] : [],
-      action: verifyUrl ? { label: 'Verify your email', url: verifyUrl } : null,
+      rows: code
+        ? [
+            ['Verification code', code],
+            ['Expires in', `${expiresInMinutes} minutes`],
+          ]
+        : [],
+      body: code
+        ? ['Enter this code on the verification screen to confirm your email and unlock the full dashboard.']
+        : [],
     }),
   };
 }
 
-function sellerEmailVerification({ businessName, verifyUrl, expiresInMinutes = 60 }) {
+function sellerEmailVerification({ businessName, code, expiresInMinutes = 10 }) {
   return {
-    subject: 'Verify your Cognicart email address',
+    subject: 'Your Cognicart verification code',
     text: [
       `Hi ${businessName || 'there'}, confirm your email to finish setting up your Cognicart account.`,
-      `Verify here: ${verifyUrl}`,
-      `This link expires in ${expiresInMinutes} minutes.`,
+      `Your verification code is ${code}.`,
+      `It expires in ${expiresInMinutes} minutes.`,
       'If you did not create this account, you can ignore this email.',
     ].join('\n'),
     html: emailHtml({
-      preheader: 'Confirm your email address',
+      preheader: `Your verification code is ${code}`,
       heading: 'Verify your email',
-      intro: `Hi ${businessName || 'there'}, confirm your email to finish setting up your Cognicart account.`,
-      body: [`This link expires in ${expiresInMinutes} minutes.`, 'If you did not create this account, you can safely ignore this email.'],
-      action: { label: 'Verify email', url: verifyUrl },
+      intro: `Hi ${businessName || 'there'}, enter this one-time code to finish setting up your Cognicart account.`,
+      rows: [
+        ['Verification code', code],
+        ['Expires in', `${expiresInMinutes} minutes`],
+      ],
+      body: ['If you did not create this account, you can safely ignore this email.'],
     }),
   };
 }

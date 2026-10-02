@@ -1,6 +1,6 @@
 const express = require('express');
 const telegramController = require('../controllers/telegramController');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, requireVerifiedEmail } = require('../middleware/authMiddleware');
 const { apiLimiter, createRateLimiter } = require('../middleware/rateLimiter');
 const { verifyTelegramWebhook } = require('../middleware/telegramWebhookMiddleware');
 
@@ -20,7 +20,7 @@ router.post(
   telegramController.webhook
 );
 
-router.use('/telegram', protect, apiLimiter);
+router.use('/telegram', protect, requireVerifiedEmail, apiLimiter);
 router.get('/telegram/config', telegramController.getConfig);
 router.post('/telegram/connect', telegramController.connect);
 router.delete('/telegram/disconnect', telegramController.disconnect);

@@ -80,7 +80,7 @@ function logout(req, res) {
 
 /**
  * @route   POST /api/auth/resend-verification
- * @desc    Resend the verify-email link
+ * @desc    Resend the verify-email one-time code
  * @access  Public
  */
 async function resendVerification(req, res, next) {
@@ -94,15 +94,19 @@ async function resendVerification(req, res, next) {
 }
 
 /**
- * @route   GET /api/auth/verify-email?token=...
- * @desc    Redeem a verify-email token
+ * @route   POST /api/auth/verify-email
+ * @desc    Redeem a verify-email one-time code
  * @access  Public
  */
 async function verifyEmail(req, res, next) {
   try {
-    const token = req.query.token || req.body.token;
-    const seller = await authService.verifyEmail(token);
-    res.status(200).json({ success: true, seller });
+    const { email, code } = req.body;
+    const result = await authService.verifyEmailOtp({ email, code });
+
+    // Verification can happen on a device that never held a session (the code
+    // was typed from a phone, say), so issue the cookie here too.
+    res.cookie('token', result.token, sellerSessionCookieOptions());
+    res.status(200).json({ success: true, ...result });
   } catch (error) {
     next(error);
   }

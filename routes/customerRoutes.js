@@ -5,9 +5,9 @@
 const express = require('express');
 const router = express.Router();
 const customerController = require('../controllers/customerController');
-const { protect } = require('../middleware/authMiddleware');
+const { protect, requireVerifiedEmail } = require('../middleware/authMiddleware');
 
-router.use(protect);
+router.use(protect, requireVerifiedEmail);
 
 router.get('/', customerController.getCustomers);
 router.get('/:id', customerController.getCustomerById);

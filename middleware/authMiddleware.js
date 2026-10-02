@@ -97,6 +97,42 @@ async function optionalAuth(req, res, next) {
 }
 
 /**
+ * Hard gate for seller-scoped features: an account whose email has not been
+ * confirmed with the signup OTP may authenticate (so it can reach /auth/me and
+ * the resend/verify endpoints) but cannot touch tenant data.
+ *
+ * Must be mounted AFTER `protect`, which is what populates `req.user`.
+ *
+ * The gate is uniform across roles. Privileged accounts never pass through the
+ * signup OTP, so `npm run create-admin` provisions them with
+ * `isEmailVerified: true` instead of exempting them here - one rule, no
+ * role-shaped hole. Admins created before that change need a one-off
+ * `npm run create-admin -- --email <addr> --role <role> --promote`, which
+ * backfills the flag.
+ */
+function requireVerifiedEmail(req, res, next) {
+  const user = req.user;
+
+  if (!user) {
+    return res.status(401).json({
+      success: false,
+      message: 'Not authorized: No authenticated session',
+    });
+  }
+
+  if (user.isEmailVerified !== true) {
+    return res.status(403).json({
+      success: false,
+      code: 'EMAIL_NOT_VERIFIED',
+      message: 'Verify your email address to use this feature. Check your inbox for the 6 digit code.',
+      email: user.email,
+    });
+  }
+
+  next();
+}
+
+/**
  * Role-based access control middleware
  * @param  {...string} roles - e.g. 'admin', 'platform_owner', 'seller'
  */
@@ -115,5 +151,6 @@ function authorizeRoles(...roles) {
 module.exports = {
   protect,
   optionalAuth,
+  requireVerifiedEmail,
   authorizeRoles,
 };

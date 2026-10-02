@@ -123,6 +123,8 @@ The system architecture is implemented across modular phases following domain-dr
 | `GET` | `/health/ready` / `/api/health/ready` | Deep system readiness probe | Public |
 | `POST` | `/api/auth/register` | Register new seller account (rate limited) | Public |
 | `POST` | `/api/auth/login` | Authenticate seller or admin (rate limited) | Public |
+| `POST` | `/api/auth/resend-verification` | Email a fresh 6 digit signup code (generic response, 60s cooldown) | Public |
+| `POST` | `/api/auth/verify-email` | Exchange email + 6 digit code for a verified account and session | Public |
 | `GET` | `/api/auth/me` | Fetch authenticated seller profile | Bearer Token |
 | `GET` | `/api/business` | Get seller's business configuration | Bearer Token |
 | `PATCH` | `/api/business` | Update business settings, slug & policies | Bearer Token |

@@ -19,6 +19,13 @@
  *   --phone      optional Nigerian phone number
  *   --role       seller | admin | platform_owner (default: admin)
  *   --promote    change the role of an account that already exists
+ *   --verified   force isEmailVerified (default: true for admin/platform_owner,
+ *                false for seller, which must still complete the signup OTP).
+ *                Pass `--verified false` to make a privileged account verify.
+ *
+ * Provisioned privileged accounts are marked email-verified because they never
+ * receive a signup OTP, and `requireVerifiedEmail` gates every role equally.
+ * `--promote` also backfills the flag on accounts created before this change.
  */
 
 require('dotenv').config();
@@ -57,6 +64,11 @@ async function main() {
   const phone = typeof args.phone === 'string' ? args.phone : '';
 
   const promote = args.promote === true || args.promote === 'true';
+
+  // Privileged accounts are provisioned verified: they never get a signup OTP,
+  // and the verification gate no longer exempts any role.
+  const privileged = role === 'admin' || role === 'platform_owner';
+  const isEmailVerified = args.verified === undefined ? privileged : args.verified !== 'false';
 
   if (!email) {
     console.error('Error: --email is required.\n');
@@ -102,14 +114,19 @@ async function main() {
     }
 
     const previousRole = existing.role;
+    const previouslyVerified = existing.isEmailVerified === true;
     existing.role = role;
     if (password) existing.password = password; // re-hashed by the User pre('save') hook
     existing.isActive = true;
+    // Backfill: a privileged account provisioned before the OTP gate landed
+    // would otherwise be locked out of every seller-scoped route.
+    if (isEmailVerified) existing.isEmailVerified = true;
     await existing.save();
 
     console.log(`Updated existing account ${normalizedEmail}:`);
     console.log(`  role:     ${previousRole} -> ${existing.role}`);
     console.log(`  password: ${password ? 'reset' : 'unchanged'}`);
+    console.log(`  verified: ${previouslyVerified} -> ${existing.isEmailVerified === true}`);
     await disconnectDB();
     return;
   }
@@ -120,12 +137,14 @@ async function main() {
     password,
     phone,
     role,
+    isEmailVerified,
   });
 
   console.log('Account created successfully:');
   console.log(`  id:    ${user._id.toString()}`);
   console.log(`  email: ${user.email}`);
   console.log(`  role:  ${user.role}`);
+  console.log(`  email verified: ${user.isEmailVerified === true}`);
 
   await disconnectDB();
 }

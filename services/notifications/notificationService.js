@@ -225,8 +225,8 @@ const notificationService = {
     });
   },
 
-  /** Sent once, right after a seller account is created. */
-  async sendSellerWelcome({ email, businessName, verifyUrl = '' }) {
+  /** Sent once, right after a seller account is created. Carries the signup OTP. */
+  async sendSellerWelcome({ email, businessName, code = '', expiresInMinutes = 10 }) {
     const to = normalizedEmail(email);
     if (!to) return skipped(EVENTS.SELLER_WELCOME, 'destination_missing');
 
@@ -235,13 +235,13 @@ const notificationService = {
       to,
       toName: businessName,
       business: {},
-      rendered: templates.sellerWelcome({ businessName, verifyUrl }),
+      rendered: templates.sellerWelcome({ businessName, code, expiresInMinutes }),
       tags: ['seller-lifecycle'],
     });
   },
 
-  /** Verify-email link for a seller account. */
-  async sendSellerEmailVerification({ email, businessName, verifyUrl, expiresInMinutes = 60 }) {
+  /** Verify-email one-time code for a seller account. */
+  async sendSellerEmailVerification({ email, businessName, code, expiresInMinutes = 10 }) {
     const to = normalizedEmail(email);
     if (!to) return skipped(EVENTS.SELLER_EMAIL_VERIFICATION, 'destination_missing');
 
@@ -250,7 +250,7 @@ const notificationService = {
       to,
       toName: businessName,
       business: {},
-      rendered: templates.sellerEmailVerification({ businessName, verifyUrl, expiresInMinutes }),
+      rendered: templates.sellerEmailVerification({ businessName, code, expiresInMinutes }),
       tags: ['authentication'],
     });
   },
