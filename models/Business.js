@@ -49,6 +49,12 @@ const businessSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    // Cloudinary asset id behind `logo`. Kept so replacing or clearing the
+    // logo can destroy the previous asset instead of orphaning it.
+    logoPublicId: {
+      type: String,
+      default: '',
+    },
     deliveryInfo: {
       type: String,
       default: 'Lagos 1-2 days, outside Lagos 2-4 days',

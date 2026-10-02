@@ -7,6 +7,37 @@ const mongoose = require('mongoose');
 const Product = require('../../models/Product');
 const { sanitize, escapeRegex } = require('../../utils/validators');
 const logger = require('../../utils/logger');
+const { deleteFromCloudinary } = require('../../utils/cloudinary');
+
+/**
+ * Base64 data URIs are no longer accepted: the browser uploads directly to
+ * Cloudinary and only the resulting URL is stored. This keeps a stale client
+ * from re-introducing multi-megabyte product documents.
+ */
+function rejectDataUris(images) {
+  if (!Array.isArray(images)) return;
+  const offender = images.find(
+    (value) => typeof value === 'string' && value.trim().toLowerCase().startsWith('data:')
+  );
+  if (offender) {
+    const err = new Error(
+      'Inline base64 images are not accepted. Upload each file to Cloudinary and send its URL.'
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+}
+
+/** Destroy Cloudinary assets that are no longer referenced. Never throws. */
+function destroyAssets(publicIds, context) {
+  (publicIds || [])
+    .filter(Boolean)
+    .forEach((publicId) =>
+      deleteFromCloudinary(publicId).catch((error) =>
+        logger.warn('Could not delete product image asset:', { ...context, publicId, error: error.message })
+      )
+    );
+}
 
 function normalizeStock(payload) {
   if (payload.variants && Array.isArray(payload.variants) && payload.variants.length > 0) {
@@ -107,6 +138,8 @@ const productService = {
       throw err;
     }
 
+    rejectDataUris(payload.images);
+
     const price = Number(payload.price);
     if (isNaN(price) || price < 0) {
       const err = new Error('Valid price is required (cannot be negative)');
@@ -123,6 +156,7 @@ const productService = {
       stock: normalizeStock(payload),
       category: sanitize(payload.category || 'Other', 50),
       images: Array.isArray(payload.images) ? payload.images : [],
+      imagePublicIds: Array.isArray(payload.imagePublicIds) ? payload.imagePublicIds : [],
       isActive: payload.isActive !== undefined ? payload.isActive : true,
       discount: payload.discount || { active: false, type: 'percentage', value: 0 },
       variants: Array.isArray(payload.variants) ? payload.variants : [],
@@ -143,6 +177,8 @@ const productService = {
       throw err;
     }
 
+    rejectDataUris(payload.images);
+
     const updates = {};
     if (payload.name !== undefined) updates.name = sanitize(payload.name, 120);
     if (payload.description !== undefined) updates.description = sanitize(payload.description, 3000);
@@ -157,6 +193,9 @@ const productService = {
     }
     if (payload.category !== undefined) updates.category = sanitize(payload.category, 50);
     if (payload.images !== undefined && Array.isArray(payload.images)) updates.images = payload.images;
+    if (payload.imagePublicIds !== undefined && Array.isArray(payload.imagePublicIds)) {
+      updates.imagePublicIds = payload.imagePublicIds;
+    }
     if (payload.isActive !== undefined) updates.isActive = payload.isActive;
     if (payload.discount !== undefined) updates.discount = payload.discount;
     if (payload.variants !== undefined && Array.isArray(payload.variants)) {
@@ -168,6 +207,14 @@ const productService = {
 
     if (!mongoose.isValidObjectId(id)) {
       throw notFound('Product not found or access denied');
+    }
+
+    // Work out which assets the incoming image set drops, before overwriting.
+    let orphanedImageIds = [];
+    if (updates.imagePublicIds !== undefined) {
+      const current = await Product.findOne({ _id: id, sellerId }).select('imagePublicIds').lean();
+      const kept = new Set(updates.imagePublicIds.filter(Boolean));
+      orphanedImageIds = ((current && current.imagePublicIds) || []).filter((pid) => pid && !kept.has(pid));
     }
 
     const product = await Product.findOneAndUpdate(
@@ -182,6 +229,8 @@ const productService = {
     }
 
     logger.info('Product updated:', { id, sellerId });
+    destroyAssets(orphanedImageIds, { id, sellerId });
+
     return product.toJSON();
   },
 
@@ -203,6 +252,9 @@ const productService = {
     if (!result) {
       throw notFound('Product not found or access denied');
     }
+
+    // A deleted product's images are unreachable; release the storage.
+    destroyAssets(result.imagePublicIds, { id, sellerId });
 
     logger.info('Product deleted:', { id, sellerId });
     return { success: true, message: 'Product deleted successfully' };

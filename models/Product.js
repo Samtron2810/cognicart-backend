@@ -72,6 +72,12 @@ const productSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    // Cloudinary asset ids, positionally aligned with `images`. Used to
+    // destroy assets that are removed from the product.
+    imagePublicIds: {
+      type: [String],
+      default: [],
+    },
     isActive: {
       type: Boolean,
       default: true,

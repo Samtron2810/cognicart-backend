@@ -24,6 +24,7 @@ const campaignRoutes = require('./campaignRoutes');
 const storefrontRoutes = require('./storefrontRoutes');
 const shopRoutes = require('./shopRoutes');
 const telegramRoutes = require('./telegramRoutes');
+const uploadRoutes = require('./uploadRoutes');
 const { verifyPaystackSignature } = require('../middleware/webhookMiddleware');
 const paymentController = require('../controllers/paymentController');
 
@@ -45,6 +46,7 @@ router.post('/webhooks/paystack', verifyPaystackSignature, paymentController.han
 router.use('/api/auth', authRoutes);
 router.use('/api/sellers', sellerRoutes);
 router.use('/api/business', sellerRoutes); // Direct mount for businessService compatibility
+router.use('/api/uploads', uploadRoutes);
 router.use('/api/products', productRoutes);
 router.use('/api/orders', orderRoutes);
 router.use('/api/customers', customerRoutes);

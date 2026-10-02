@@ -7,6 +7,23 @@ const mongoose = require('mongoose');
 const Business = require('../../models/Business');
 const User = require('../../models/User');
 const logger = require('../../utils/logger');
+const { deleteFromCloudinary } = require('../../utils/cloudinary');
+
+/**
+ * Base64 data URIs are no longer accepted for media fields: images are
+ * uploaded straight to Cloudinary by the browser and only the resulting URL is
+ * stored. Rejecting them here keeps a stale client (or a hand-rolled request)
+ * from re-introducing multi-megabyte documents.
+ */
+function rejectDataUri(value, field) {
+  if (typeof value === 'string' && value.trim().toLowerCase().startsWith('data:')) {
+    const err = new Error(
+      `Inline base64 images are not accepted for "${field}". Upload the file to Cloudinary and send its URL.`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+}
 
 const UPDATABLE_FIELDS = [
   'name',
@@ -16,6 +33,7 @@ const UPDATABLE_FIELDS = [
   'email',
   'location',
   'logo',
+  'logoPublicId',
   'deliveryInfo',
   'deliveryFee',
   'deliveryTime',
@@ -89,6 +107,8 @@ const businessService = {
       throw err;
     }
 
+    rejectDataUri(payload.logo, 'logo');
+
     const updates = {};
     for (const field of UPDATABLE_FIELDS) {
       if (payload[field] !== undefined) {
@@ -99,11 +119,28 @@ const businessService = {
     // Guarantee the profile exists before patching it
     await this.getBySellerId(sellerId);
 
+    // Capture the outgoing asset before the write so it can be destroyed after.
+    let orphanedLogoId = '';
+    if (updates.logo !== undefined || updates.logoPublicId !== undefined) {
+      const current = await Business.findOne({ sellerId }).select('logo logoPublicId').lean();
+      const previousId = current && current.logoPublicId;
+      const stillInUse = previousId && updates.logoPublicId === previousId;
+      if (previousId && !stillInUse) orphanedLogoId = previousId;
+    }
+
     const business = await Business.findOneAndUpdate(
       { sellerId },
       { $set: updates },
       { new: true, runValidators: true, upsert: true }
     );
+
+    if (orphanedLogoId) {
+      // Side effect only: the profile is already saved, so a failed destroy
+      // must never fail the request.
+      deleteFromCloudinary(orphanedLogoId).catch((error) =>
+        logger.warn('Could not delete replaced logo asset:', { sellerId, error: error.message })
+      );
+    }
 
     logger.info('Business profile updated:', { sellerId });
     return business.toJSON();
