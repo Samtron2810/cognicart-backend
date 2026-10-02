@@ -30,6 +30,8 @@ const expected = [
 // test hooks, or advanced tuning controls—not normal deployment inputs.
 const intentionallyOmitted = [
   'BREVO_API_URL',
+  'BROADCAST_EMAIL_DELAY_MS',
+  'BROADCAST_MAX_RECIPIENTS',
   'BREVO_TIMEOUT_MS',
   'JWT_EXPIRES_IN',
   'LOG_LEVEL',

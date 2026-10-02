@@ -28,7 +28,7 @@ function formatDate(value) {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString('en-NG');
 }
 
-function emailHtml({ preheader, heading, intro, rows = [], body = [], action }) {
+function emailHtml({ preheader, heading, intro, rows = [], body = [], action, unsubscribeUrl = '' }) {
   const safeRows = rows
     .map(
       ([label, value]) => `
@@ -46,6 +46,12 @@ function emailHtml({ preheader, heading, intro, rows = [], body = [], action }) 
     ? `<p style="margin:24px 0"><a href="${escapeHtml(action.url)}" style="display:inline-block;padding:12px 20px;background:#0f172a;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600">${escapeHtml(action.label)}</a></p>`
     : '';
 
+  // Marketing mail must carry a working one-click opt-out. Transactional
+  // templates pass nothing here and render no footer.
+  const footer = unsubscribeUrl
+    ? `<p style="margin:18px 0 0;text-align:center;color:#94a3b8;font-size:12px;line-height:1.6">You are receiving this because you have a Cognicart seller account.<br /><a href="${escapeHtml(unsubscribeUrl)}" style="color:#64748b;text-decoration:underline">Unsubscribe from announcements</a></p>`
+    : '';
+
   return `<!doctype html>
 <html><body style="margin:0;background:#f8fafc;font-family:Arial,sans-serif">
   <span style="display:none;max-height:0;overflow:hidden">${escapeHtml(preheader || '')}</span>
@@ -57,6 +63,7 @@ function emailHtml({ preheader, heading, intro, rows = [], body = [], action }) 
       ${paragraphs}
       ${button}
     </div>
+    ${footer}
   </div>
 </body></html>`;
 }
@@ -258,6 +265,37 @@ function sellerPasswordReset({ businessName, resetUrl, expiresInMinutes = 30 }) 
   };
 }
 
+/**
+ * Platform -> seller announcement. The body is PLAIN TEXT by contract: it is
+ * split into paragraphs and escaped by `emailHtml`, so a composer can never
+ * inject markup into a message sent to the whole platform.
+ */
+function adminBroadcast({ businessName, subject, body, preheader = '', ctaLabel = '', ctaUrl = '', unsubscribeUrl = '' }) {
+  const paragraphs = String(body || '')
+    .split(/\n{2,}/)
+    .map((block) => block.replace(/\n/g, ' ').trim())
+    .filter(Boolean);
+
+  return {
+    subject: subject || 'An update from Cognicart',
+    text: [
+      `Hi ${businessName || 'there'},`,
+      '',
+      ...paragraphs,
+      ...(ctaUrl ? ['', `${ctaLabel || 'Open'}: ${ctaUrl}`] : []),
+      ...(unsubscribeUrl ? ['', `Unsubscribe from announcements: ${unsubscribeUrl}`] : []),
+    ].join('\n'),
+    html: emailHtml({
+      preheader: preheader || paragraphs[0] || subject,
+      heading: subject || 'An update from Cognicart',
+      intro: `Hi ${businessName || 'there'},`,
+      body: paragraphs,
+      action: ctaUrl ? { label: ctaLabel || 'Open', url: ctaUrl } : null,
+      unsubscribeUrl,
+    }),
+  };
+}
+
 function sellerPasswordChanged({ businessName }) {
   return {
     subject: 'Your Cognicart password was changed',
@@ -299,6 +337,7 @@ module.exports = {
   paymentReceipt,
   orderStatus,
   buyerOtp,
+  adminBroadcast,
   sellerWelcome,
   sellerEmailVerification,
   sellerPasswordReset,

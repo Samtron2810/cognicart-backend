@@ -6,6 +6,7 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
+const broadcastRoutes = require('./broadcastRoutes');
 const { protect, authorizeRoles, requireVerifiedEmail } = require('../middleware/authMiddleware');
 
 // Secure all admin routes with authentication, confirmed email, and role
@@ -16,6 +17,9 @@ const { protect, authorizeRoles, requireVerifiedEmail } = require('../middleware
 router.use(protect);
 router.use(requireVerifiedEmail);
 router.use(authorizeRoles('admin', 'platform_owner'));
+
+// Seller broadcast email (inherits protect + requireVerifiedEmail + role above)
+router.use('/broadcasts', broadcastRoutes);
 
 // Operational analytics & KPIs
 router.get('/stats', adminController.getPlatformStats);

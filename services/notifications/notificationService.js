@@ -23,6 +23,7 @@ const EVENTS = Object.freeze({
   SELLER_PASSWORD_RESET: 'seller.password_reset',
   SELLER_PASSWORD_CHANGED: 'seller.password_changed',
   SELLER_ACCOUNT_STATUS: 'seller.account_status',
+  ADMIN_BROADCAST: 'admin.broadcast',
 });
 
 function normalizedEmail(value) {
@@ -297,6 +298,33 @@ const notificationService = {
       business: {},
       rendered: templates.sellerAccountStatus({ businessName, isActive }),
       tags: ['seller-lifecycle'],
+    });
+  },
+
+  /**
+   * Platform announcement to a seller. This is the only MARKETING email in the
+   * service: callers must have already filtered out `marketingOptOut` accounts
+   * and must pass an unsubscribe link for every real account.
+   */
+  async sendAdminBroadcast({ email, businessName, subject, body, preheader, ctaLabel, ctaUrl, unsubscribeUrl }) {
+    const to = normalizedEmail(email);
+    if (!to) return skipped(EVENTS.ADMIN_BROADCAST, 'destination_missing');
+
+    return dispatchEmail({
+      event: EVENTS.ADMIN_BROADCAST,
+      to,
+      toName: businessName,
+      business: {},
+      rendered: templates.adminBroadcast({
+        businessName,
+        subject,
+        body,
+        preheader,
+        ctaLabel,
+        ctaUrl,
+        unsubscribeUrl,
+      }),
+      tags: ['broadcast'],
     });
   },
 

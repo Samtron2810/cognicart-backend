@@ -46,6 +46,13 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Suppresses admin BROADCAST email only. Transactional mail (OTP, password
+    // reset, order and account notices) is unaffected by design.
+    marketingOptOut: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
   },
   {
     timestamps: true,

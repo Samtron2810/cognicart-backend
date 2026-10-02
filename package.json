@@ -8,7 +8,6 @@
     "dev": "nodemon server.js",
     "start": "node server.js",
     "create-admin": "node scripts/createAdmin.js",
-    "clear-base64": "node scripts/clearBase64Media.js",
     "check-indexes": "node scripts/checkDuplicateIndexes.js",
     "check-env": "node scripts/checkEnvExample.js",
     "telegram:poll": "node scripts/telegram-poll.js"
