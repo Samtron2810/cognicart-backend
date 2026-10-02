@@ -1,15 +1,20 @@
 /**
  * Platform Administration and Revenue Routes
- * Enforces role-based access for 'admin' and 'platform_owner'
+ * Enforces a confirmed email plus role-based access for 'admin' and 'platform_owner'
  */
 
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
-const { protect, authorizeRoles } = require('../middleware/authMiddleware');
+const { protect, authorizeRoles, requireVerifiedEmail } = require('../middleware/authMiddleware');
 
-// Secure all admin routes with authentication and role authorization
+// Secure all admin routes with authentication, confirmed email, and role
+// authorization. Verification is checked before the role check so an
+// unverified privileged account cannot touch a single admin endpoint - the
+// CLI provisions these accounts with `isEmailVerified: true`, and one that
+// predates that change must be backfilled with `--promote`.
 router.use(protect);
+router.use(requireVerifiedEmail);
 router.use(authorizeRoles('admin', 'platform_owner'));
 
 // Operational analytics & KPIs
