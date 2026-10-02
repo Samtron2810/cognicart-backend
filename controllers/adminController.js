@@ -99,10 +99,12 @@ const adminController = {
     try {
       const [sellerRows, productRows, orderRows, totalCustomers, messageRows, paymentRows, feeConfig, recentOrders] =
         await Promise.all([
+          // Grouped by role: an admin account is a User row too, and counting
+          // one as a seller overstated every seller figure on the platform.
           User.aggregate([
             {
               $group: {
-                _id: null,
+                _id: '$role',
                 total: { $sum: 1 },
                 suspended: { $sum: { $cond: [{ $eq: ['$isActive', false] }, 1, 0] } },
               },
@@ -157,7 +159,19 @@ const adminController = {
           Order.find().sort({ createdAt: -1 }).limit(5).lean(),
         ]);
 
-      const sellerAgg = sellerRows[0] || { total: 0, suspended: 0 };
+      // A missing/legacy `role` defaults to 'seller' in the schema, so treat a
+      // null bucket as sellers rather than silently dropping those accounts.
+      const roleTotals = sellerRows.reduce(
+        (acc, row) => {
+          const bucket = row._id === 'admin' || row._id === 'platform_owner' ? 'admin' : 'seller';
+          acc[bucket].total += row.total;
+          acc[bucket].suspended += row.suspended;
+          if (row._id === 'platform_owner') acc.owners += row.total;
+          return acc;
+        },
+        { seller: { total: 0, suspended: 0 }, admin: { total: 0, suspended: 0 }, owners: 0 }
+      );
+      const sellerAgg = roleTotals.seller;
       const productAgg = productRows[0] || { total: 0, active: 0 };
       const orderAgg = orderRows[0] || { total: 0, pending: 0, delivered: 0, paidCount: 0, totalSales: 0 };
       const messageAgg = messageRows[0] || { total: 0, inbound: 0, outbound: 0 };
@@ -175,9 +189,13 @@ const adminController = {
       const sellerEarnings = Math.max(0, totalSales - platformRevenue - paystackFees);
 
       res.status(200).json({
+        // Sellers only. Admin accounts are reported separately below.
         totalSellers: sellerAgg.total,
         activeSellers: sellerAgg.total - sellerAgg.suspended,
         suspendedSellers: sellerAgg.suspended,
+        totalAdmins: roleTotals.admin.total,
+        platformOwners: roleTotals.owners,
+        totalAccounts: sellerAgg.total + roleTotals.admin.total,
         totalProducts: productAgg.total,
         activeProducts: productAgg.active,
         totalOrders: orderAgg.total,
@@ -204,13 +222,26 @@ const adminController = {
 
   /**
    * @route   GET /api/admin/sellers
-   * @desc    List all platform sellers with performance metrics
+   * @desc    List platform accounts with performance metrics
+   * @query   role - 'seller' (default), 'admin' (admins + platform owners), or 'all'
    * @access  Private (Admin / Platform Owner)
+   *
+   * Defaults to sellers so the page's headline numbers mean what they say.
+   * `role=admin` makes admin access auditable instead of merely visible, and
+   * an unrecognised value falls back to sellers rather than leaking everyone.
    */
   async listSellers(req, res, next) {
     try {
+      const requestedRole = String(req.query.role || 'seller').toLowerCase();
+      const roleFilter =
+        requestedRole === 'all'
+          ? {}
+          : requestedRole === 'admin'
+            ? { role: { $in: ['admin', 'platform_owner'] } }
+            : { role: { $nin: ['admin', 'platform_owner'] } };
+
       const [sellers, businesses, productRows, orderRows, customerRows, messageRows] = await Promise.all([
-        User.find().select('-password').sort({ createdAt: -1 }).lean(),
+        User.find(roleFilter).select('-password').sort({ createdAt: -1 }).lean(),
         Business.find().lean(),
         Product.aggregate([
           {

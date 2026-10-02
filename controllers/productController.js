@@ -4,7 +4,6 @@
  */
 
 const productService = require('../services/products/productService');
-const { uploadToCloudinary } = require('../utils/cloudinary');
 
 /**
  * @route   GET /api/products
@@ -88,40 +87,10 @@ async function deleteProduct(req, res, next) {
   }
 }
 
-/**
- * @route   POST /api/products/upload
- * @desc    Upload product images to Cloudinary
- * @access  Private
- */
-async function uploadImages(req, res, next) {
-  try {
-    const files = req.files || (req.file ? [req.file] : []);
-    if (!files || files.length === 0) {
-      return res.status(400).json({ success: false, message: 'No image files provided' });
-    }
-
-    const uploadPromises = files.map((file) =>
-      uploadToCloudinary(file.buffer, { folder: `wabac/products/${req.sellerId}` })
-    );
-
-    const results = await Promise.all(uploadPromises);
-    const urls = results.map((r) => r.url);
-
-    res.status(200).json({
-      success: true,
-      urls,
-      images: results,
-    });
-  } catch (error) {
-    next(error);
-  }
-}
-
 module.exports = {
   getProducts,
   getProductById,
   createProduct,
   updateProduct,
   deleteProduct,
-  uploadImages,
 };
