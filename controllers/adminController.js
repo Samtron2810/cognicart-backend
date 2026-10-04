@@ -54,6 +54,16 @@ function serializeUser(doc) {
   return out;
 }
 
+/**
+ * Business fields the admin workspace actually renders. Payout details
+ * (`bankName`, `accountNumber`, `accountName`) are deliberately absent: they
+ * are irrelevant to these screens, and shipping them in a list response put
+ * every seller's bank account on the wire to populate an avatar and a badge.
+ */
+const ADMIN_BUSINESS_FIELDS =
+  'sellerId name logo phone location deliveryInfo deliveryFee ' +
+  'telegramBotId telegramBotUsername telegramConnected telegramConnectedAt telegramWebhookVerified';
+
 function serializeBusiness(doc) {
   const out = baseSerialize(doc);
   if (!out) return out;
@@ -242,7 +252,7 @@ const adminController = {
 
       const [sellers, businesses, productRows, orderRows, customerRows, messageRows] = await Promise.all([
         User.find(roleFilter).select('-password').sort({ createdAt: -1 }).lean(),
-        Business.find().lean(),
+        Business.find().select(ADMIN_BUSINESS_FIELDS).lean(),
         Product.aggregate([
           {
             $group: {
@@ -320,7 +330,7 @@ const adminController = {
       // Scoped to this seller and bounded: previously every document on the
       // platform was loaded and then filtered down to one tenant in Node.
       const [business, products, orders, customers, messages] = await Promise.all([
-        Business.findOne({ sellerId: id }).lean(),
+        Business.findOne({ sellerId: id }).select(ADMIN_BUSINESS_FIELDS).lean(),
         Product.find({ sellerId: id }).sort({ createdAt: -1 }).limit(DETAIL_LIMIT).lean(),
         Order.find({ sellerId: id }).sort({ createdAt: -1 }).limit(DETAIL_LIMIT).lean(),
         Customer.find({ sellerId: id }).sort({ createdAt: -1 }).limit(DETAIL_LIMIT).lean(),
