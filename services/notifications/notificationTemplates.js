@@ -49,7 +49,7 @@ function emailHtml({ preheader, heading, intro, rows = [], body = [], action, un
   // Marketing mail must carry a working one-click opt-out. Transactional
   // templates pass nothing here and render no footer.
   const footer = unsubscribeUrl
-    ? `<p style="margin:18px 0 0;text-align:center;color:#94a3b8;font-size:12px;line-height:1.6">You are receiving this because you have a Cognicart seller account.<br /><a href="${escapeHtml(unsubscribeUrl)}" style="color:#64748b;text-decoration:underline">Unsubscribe from announcements</a></p>`
+    ? `<p style="margin:18px 0 0;text-align:center;color:#94a3b8;font-size:12px;line-height:1.6">You are receiving this because you have a Chatstand seller account.<br /><a href="${escapeHtml(unsubscribeUrl)}" style="color:#64748b;text-decoration:underline">Unsubscribe from announcements</a></p>`
     : '';
 
   return `<!doctype html>
@@ -194,9 +194,9 @@ function buyerOtp({ code, expiresInMinutes = 10 }) {
 
 function sellerWelcome({ businessName, code, expiresInMinutes = 10 }) {
   return {
-    subject: 'Welcome to Cognicart 🎉 - your verification code',
+    subject: 'Welcome to Chatstand 🎉 - your verification code',
     text: [
-      `Hi ${businessName || 'there'}, welcome to Cognicart!`,
+      `Hi ${businessName || 'there'}, welcome to Chatstand!`,
       'Your seller account is ready. Connect your Telegram bot, add products, and start selling.',
       ...(code
         ? [
@@ -208,8 +208,8 @@ function sellerWelcome({ businessName, code, expiresInMinutes = 10 }) {
         : []),
     ].join('\n'),
     html: emailHtml({
-      preheader: code ? `Your verification code is ${code}` : 'Your Cognicart seller account is ready',
-      heading: 'Welcome to Cognicart',
+      preheader: code ? `Your verification code is ${code}` : 'Your Chatstand seller account is ready',
+      heading: 'Welcome to Chatstand',
       intro: `Hi ${businessName || 'there'}, your seller account is ready. Connect your Telegram bot, add products, and start selling across Telegram and your storefront.`,
       rows: code
         ? [
@@ -226,9 +226,9 @@ function sellerWelcome({ businessName, code, expiresInMinutes = 10 }) {
 
 function sellerEmailVerification({ businessName, code, expiresInMinutes = 10 }) {
   return {
-    subject: 'Your Cognicart verification code',
+    subject: 'Your Chatstand verification code',
     text: [
-      `Hi ${businessName || 'there'}, confirm your email to finish setting up your Cognicart account.`,
+      `Hi ${businessName || 'there'}, confirm your email to finish setting up your Chatstand account.`,
       `Your verification code is ${code}.`,
       `It expires in ${expiresInMinutes} minutes.`,
       'If you did not create this account, you can ignore this email.',
@@ -236,7 +236,7 @@ function sellerEmailVerification({ businessName, code, expiresInMinutes = 10 }) 
     html: emailHtml({
       preheader: `Your verification code is ${code}`,
       heading: 'Verify your email',
-      intro: `Hi ${businessName || 'there'}, enter this one-time code to finish setting up your Cognicart account.`,
+      intro: `Hi ${businessName || 'there'}, enter this one-time code to finish setting up your Chatstand account.`,
       rows: [
         ['Verification code', code],
         ['Expires in', `${expiresInMinutes} minutes`],
@@ -248,9 +248,9 @@ function sellerEmailVerification({ businessName, code, expiresInMinutes = 10 }) 
 
 function sellerPasswordReset({ businessName, resetUrl, expiresInMinutes = 30 }) {
   return {
-    subject: 'Reset your Cognicart password',
+    subject: 'Reset your Chatstand password',
     text: [
-      `Hi ${businessName || 'there'}, we received a request to reset your Cognicart password.`,
+      `Hi ${businessName || 'there'}, we received a request to reset your Chatstand password.`,
       `Reset it here: ${resetUrl}`,
       `This link expires in ${expiresInMinutes} minutes.`,
       'If you did not request this, you can ignore this email — your password will stay the same.',
@@ -258,7 +258,7 @@ function sellerPasswordReset({ businessName, resetUrl, expiresInMinutes = 30 }) 
     html: emailHtml({
       preheader: 'Reset your password',
       heading: 'Reset your password',
-      intro: `Hi ${businessName || 'there'}, we received a request to reset your Cognicart password.`,
+      intro: `Hi ${businessName || 'there'}, we received a request to reset your Chatstand password.`,
       body: [`This link expires in ${expiresInMinutes} minutes.`, 'If you did not request this, you can ignore this email — your password will stay the same.'],
       action: { label: 'Reset password', url: resetUrl },
     }),
@@ -277,7 +277,7 @@ function adminBroadcast({ businessName, subject, body, preheader = '', ctaLabel 
     .filter(Boolean);
 
   return {
-    subject: subject || 'An update from Cognicart',
+    subject: subject || 'An update from Chatstand',
     text: [
       `Hi ${businessName || 'there'},`,
       '',
@@ -287,7 +287,7 @@ function adminBroadcast({ businessName, subject, body, preheader = '', ctaLabel 
     ].join('\n'),
     html: emailHtml({
       preheader: preheader || paragraphs[0] || subject,
-      heading: subject || 'An update from Cognicart',
+      heading: subject || 'An update from Chatstand',
       intro: `Hi ${businessName || 'there'},`,
       body: paragraphs,
       action: ctaUrl ? { label: ctaLabel || 'Open', url: ctaUrl } : null,
@@ -298,15 +298,15 @@ function adminBroadcast({ businessName, subject, body, preheader = '', ctaLabel 
 
 function sellerPasswordChanged({ businessName }) {
   return {
-    subject: 'Your Cognicart password was changed',
+    subject: 'Your Chatstand password was changed',
     text: [
-      `Hi ${businessName || 'there'}, your Cognicart account password was just changed.`,
+      `Hi ${businessName || 'there'}, your Chatstand account password was just changed.`,
       'If this was not you, contact platform support immediately.',
     ].join('\n'),
     html: emailHtml({
       preheader: 'Your password was changed',
       heading: 'Password changed',
-      intro: `Hi ${businessName || 'there'}, your Cognicart account password was just changed.`,
+      intro: `Hi ${businessName || 'there'}, your Chatstand account password was just changed.`,
       body: ['If this was not you, contact platform support immediately.'],
     }),
   };
@@ -315,7 +315,7 @@ function sellerPasswordChanged({ businessName }) {
 function sellerAccountStatus({ businessName, isActive }) {
   const heading = isActive ? 'Your account has been reactivated' : 'Your account has been suspended';
   const explanation = isActive
-    ? 'You can log in and continue selling on Cognicart.'
+    ? 'You can log in and continue selling on Chatstand.'
     : 'Your dashboard access has been paused by the platform team. Contact support for more information.';
   return {
     subject: heading,

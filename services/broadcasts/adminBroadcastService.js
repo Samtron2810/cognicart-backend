@@ -568,7 +568,7 @@ const adminBroadcastService = {
     const userId = verifyUnsubscribeToken(token);
     const generic = {
       success: true,
-      message: 'You have been unsubscribed from Cognicart announcements.',
+      message: 'You have been unsubscribed from Chatstand announcements.',
     };
 
     if (!userId || !mongoose.isValidObjectId(userId)) return generic;
@@ -588,7 +588,7 @@ const adminBroadcastService = {
       return { success: true, message: 'Preference updated.' };
     }
     await User.findByIdAndUpdate(userId, { $set: { marketingOptOut: false } });
-    return { success: true, message: 'You will receive Cognicart announcements again.' };
+    return { success: true, message: 'You will receive Chatstand announcements again.' };
   },
 };
 
