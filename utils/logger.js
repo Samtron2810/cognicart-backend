@@ -1,5 +1,5 @@
 /**
- * Structured Logger for WABAC Backend
+ * Structured Logger for Chatstand Backend
  * Supports debug, info, warn, error levels with timestamps and metadata
  */
 

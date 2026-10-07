@@ -1,5 +1,5 @@
 /**
- * Server Entry Point for WABAC Backend
+ * Server Entry Point for Chatstand Backend
  * Assembles modular middleware, configurations, routes, and bootstraps the HTTP listener
  */
 
@@ -66,7 +66,7 @@ if (require.main === module) {
       module.exports.server = server;
 
       server.listen(PORT, HOST, () => {
-        logger.info(`WABAC Server running in ${process.env.NODE_ENV || 'development'} mode on http://${HOST}:${PORT}`);
+        logger.info(`Chatstand Server running in ${process.env.NODE_ENV || 'development'} mode on http://${HOST}:${PORT}`);
         logger.info(`Health check live at http://${HOST}:${PORT}/health`);
       });
     })

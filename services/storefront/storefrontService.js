@@ -205,7 +205,7 @@ const storefrontService = {
   /**
    * Generate OpenGraph, Twitter Cards, and Schema.org metadata for a store
    */
-  async getStoreSEO(identifier, baseUrl = 'https://wabac.me') {
+  async getStoreSEO(identifier, baseUrl = 'https://chatstand.ng') {
     const store = await this.resolveStore(identifier);
     const storeUrl = `${baseUrl}/store/${store.slug || store.sellerId}`;
 
@@ -256,7 +256,7 @@ const storefrontService = {
   /**
    * Generate OpenGraph, Twitter Cards, and Schema.org Product markup
    */
-  async getProductSEO(identifier, productId, baseUrl = 'https://wabac.me') {
+  async getProductSEO(identifier, productId, baseUrl = 'https://chatstand.ng') {
     const { store, product } = await this.getProduct(identifier, productId);
     const productUrl = `${baseUrl}/store/${store.slug || store.sellerId}/products/${product.id}`;
     const image = (product.images && product.images[0]) || store.logo || `${baseUrl}/static/images/default-product-og.png`;
@@ -317,7 +317,7 @@ const storefrontService = {
   /**
    * Generate dynamic XML & JSON Sitemap for search engine indexation
    */
-  async getSitemap(identifier, baseUrl = 'https://wabac.me') {
+  async getSitemap(identifier, baseUrl = 'https://chatstand.ng') {
     const store = await this.resolveStore(identifier);
     const products = await productService.list({ sellerId: store.sellerId, isPublic: true });
 

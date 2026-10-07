@@ -30,7 +30,7 @@ const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // one code per phone per minute
 const OTP_MAX_ATTEMPTS = 5;
 const MAGIC_TTL_MS = 7 * 24 * 60 * 60 * 1000; // tracking links live for a week
 
-const SECRET = process.env.JWT_SECRET || 'wabac_jwt_super_secret_dev_key_2026';
+const SECRET = process.env.JWT_SECRET || 'chatstand_jwt_super_secret_dev_key_2026';
 
 function getNotificationService() {
   // Lazy to avoid the order-confirmation -> magic-link cycle at module load.

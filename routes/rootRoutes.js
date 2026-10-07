@@ -9,7 +9,7 @@ const router = express.Router();
 router.get('/', (req, res) => {
   res.status(200).json({
     success: true,
-    name: 'WABAC API',
+    name: 'Chatstand API',
     description: 'Telegram and storefront AI commerce backend platform',
     version: '1.0.0',
     documentation: '/api',
@@ -20,7 +20,7 @@ router.get('/', (req, res) => {
 router.get('/api', (req, res) => {
   res.status(200).json({
     success: true,
-    message: 'WABAC REST API is active',
+    message: 'Chatstand REST API is active',
     endpoints: {
       auth: '/api/auth',
       sellers: '/api/sellers',

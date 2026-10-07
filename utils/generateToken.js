@@ -10,7 +10,7 @@
 
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'wabac_jwt_super_secret_dev_key_2026';
+const JWT_SECRET = process.env.JWT_SECRET || 'chatstand_jwt_super_secret_dev_key_2026';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const SHOPPER_JWT_EXPIRES_IN = process.env.SHOPPER_JWT_EXPIRES_IN || '30d';
 

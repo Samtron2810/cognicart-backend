@@ -391,11 +391,11 @@ The repository contains automated integration test suites across all implemented
 
 Integration suites exercise the real persistence layer, so a **running MongoDB is required**
 for phases 1–15. Point `MONGO_URI_TEST` at a throwaway database (default
-`mongodb://127.0.0.1:27017/wabac_test`) — each database-backed suite wipes it before use.
+`mongodb://127.0.0.1:27017/chatstand_test`) — each database-backed suite wipes it before use.
 Phases 16–17 are offline provider/security contract suites:
 
 ```bash
-export MONGO_URI_TEST=mongodb://127.0.0.1:27017/wabac_test
+export MONGO_URI_TEST=mongodb://127.0.0.1:27017/chatstand_test
 ```
 
 Run the complete test suite:

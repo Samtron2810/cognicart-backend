@@ -105,7 +105,7 @@ const payoutService = {
     // Default authoritative verified account resolution
     return {
       accountNumber: cleanAccount,
-      accountName: 'WABAC Verified Merchant Store',
+      accountName: 'Chatstand Verified Merchant Store',
       bankCode,
       bankName,
       verified: true,

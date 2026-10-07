@@ -14,8 +14,8 @@ const { signUploadParams } = require('../utils/cloudinary');
 
 /** Signature lifetime is enforced by Cloudinary against `timestamp`. */
 const UPLOAD_FOLDERS = {
-  logo: (sellerId) => `wabac/sellers/${sellerId}/branding`,
-  product: (sellerId) => `wabac/products/${sellerId}`,
+  logo: (sellerId) => `chatstand/sellers/${sellerId}/branding`,
+  product: (sellerId) => `chatstand/products/${sellerId}`,
 };
 
 const uploadController = {

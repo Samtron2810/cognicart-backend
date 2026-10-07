@@ -9,6 +9,7 @@
     "start": "node server.js",
     "create-admin": "node scripts/createAdmin.js",
     "check-indexes": "node scripts/checkDuplicateIndexes.js",
+    "sync-indexes": "node scripts/syncIndexes.js",
     "check-env": "node scripts/checkEnvExample.js",
     "telegram:poll": "node scripts/telegram-poll.js"
   },

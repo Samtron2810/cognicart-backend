@@ -31,7 +31,7 @@ function normalizedEmail(value) {
   if (!isEmail(email)) return '';
   // Payment initialization previously fabricated addresses for Paystack when a
   // buyer supplied none. They are valid syntax but can never receive mail.
-  if (email.endsWith('@wabac.ng')) return '';
+  if (email.endsWith('@chatstand.ng')) return '';
   return email;
 }
 
