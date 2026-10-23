@@ -25,6 +25,7 @@ const storefrontRoutes = require('./storefrontRoutes');
 const storeDirectoryRoutes = require('./storeDirectoryRoutes');
 const reviewRoutes = require('./reviewRoutes');
 const searchRoutes = require('./searchRoutes');
+const chatRoutes = require('./chatRoutes');
 const shopRoutes = require('./shopRoutes');
 const telegramRoutes = require('./telegramRoutes');
 const uploadRoutes = require('./uploadRoutes');
@@ -67,6 +68,10 @@ router.use('/api/store', storefrontRoutes);
 router.use('/api/stores', storeDirectoryRoutes);
 router.use('/api/reviews', reviewRoutes);
 router.use('/api/search', searchRoutes);
+
+// Marketplace-wide shopping assistant. Not scoped to any one store, so it
+// is mounted at the API root rather than under /api/storefront/:identifier.
+router.use('/api/chat', chatRoutes);
 router.use('/api/admin', platformRoutes);
 router.use('/api/platform', platformRoutes);
 

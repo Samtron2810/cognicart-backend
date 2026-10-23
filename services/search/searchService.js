@@ -120,6 +120,13 @@ const searchService = {
           sellerId: product.sellerId,
           storeName: store.name,
           storeSlug: store.slug || slugify(store.name),
+          // The chat assistant and the search dropdown both render an
+          // add-to-cart button, which must not fire blind: a variant product
+          // needs a size/colour choice and a sold-out one must be disabled.
+          stock: (product.variants || []).length
+            ? (product.variants || []).reduce((sum, variant) => sum + (variant.stock || 0), 0)
+            : product.stock || 0,
+          hasVariants: Boolean((product.variants || []).length),
         };
       });
 
