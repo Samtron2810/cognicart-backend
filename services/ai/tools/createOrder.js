@@ -71,7 +71,11 @@ async function execute(sellerId, args, context = {}) {
     },
     undefined,
     {
-      source: context.channel === 'telegram' ? 'telegram' : 'storefront',
+      // The channel the conversation arrived on decides the order source, so
+      // a seller can tell a bot sale from a cart checkout at a glance.
+      source: ['telegram', 'website_chatbot'].includes(context.channel)
+        ? context.channel
+        : 'storefront',
       channel: context.channel || 'storefront',
       channelAccountId: context.channelAccountId || '',
       channelUserId: context.channelUserId || '',

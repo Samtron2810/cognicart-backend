@@ -603,4 +603,74 @@ const adminController = {
   },
 };
 
+/**
+ * @route   PATCH /api/admin/sellers/:id/sponsored
+ * @desc    Toggle paid placement for a seller in the directory
+ * @access  Admin
+ */
+async function setSellerSponsored(req, res, next) {
+  try {
+    const Business = require('../models/Business');
+    const rankingService = require('../services/ranking/rankingService');
+
+    const isSponsored = Boolean(req.body.isSponsored);
+    const sponsoredUntil = req.body.sponsoredUntil ? new Date(req.body.sponsoredUntil) : null;
+
+    const business = await Business.findOneAndUpdate(
+      { sellerId: req.params.id },
+      { $set: { isSponsored, sponsoredUntil } },
+      { new: true }
+    );
+    if (!business) return res.status(404).json({ success: false, message: 'Seller not found' });
+
+    // Re-score immediately so the change is visible without waiting an hour.
+    await rankingService.refreshSellerRanking(req.params.id);
+    res.status(200).json(business.toJSON());
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * @route   PATCH /api/admin/products/:id/promoted
+ * @desc    Add or remove a product from the promoted strip
+ * @access  Admin
+ */
+async function setProductPromoted(req, res, next) {
+  try {
+    const Product = require('../models/Product');
+    const isPromoted = Boolean(req.body.isPromoted);
+    const promotedUntil = req.body.promotedUntil ? new Date(req.body.promotedUntil) : null;
+
+    const product = await Product.findByIdAndUpdate(
+      req.params.id,
+      { $set: { isPromoted, promotedUntil } },
+      { new: true }
+    );
+    if (!product) return res.status(404).json({ success: false, message: 'Product not found' });
+    res.status(200).json(product.toJSON());
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * @route   POST /api/admin/ranking/recompute
+ * @desc    Force a ranking recompute (also the external-cron entry point)
+ * @access  Admin
+ */
+async function recomputeRanking(req, res, next) {
+  try {
+    const rankingService = require('../services/ranking/rankingService');
+    const result = await rankingService.recomputeWithLock();
+    res.status(200).json(result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = adminController;
+
+module.exports.setSellerSponsored = setSellerSponsored;
+module.exports.setProductPromoted = setProductPromoted;
+module.exports.recomputeRanking = recomputeRanking;

@@ -10,6 +10,30 @@ const logger = require('../../utils/logger');
 const { deleteFromCloudinary } = require('../../utils/cloudinary');
 
 /**
+ * Keep the seller's denormalised product count and cached ranking score in
+ * step after any catalog change. Fire-and-forget: a ranking refresh must
+ * never fail a product write the seller just made.
+ */
+async function syncSellerRanking(sellerId) {
+  if (!sellerId) return;
+  try {
+    const Business = require('../../models/Business');
+    const Product = require('../../models/Product');
+    const rankingService = require('../ranking/rankingService');
+
+    const activeProductCount = await Product.countDocuments({ sellerId, isActive: true });
+    await Business.updateOne({ sellerId }, { $set: { activeProductCount } });
+    await rankingService.refreshSellerRanking(sellerId);
+  } catch (error) {
+    // eslint-disable-next-line global-require
+    require('../../utils/logger').warn('Could not refresh seller ranking after catalog change', {
+      sellerId,
+      error: error.message,
+    });
+  }
+}
+
+/**
  * Base64 data URIs are no longer accepted: the browser uploads directly to
  * Cloudinary and only the resulting URL is stored. This keeps a stale client
  * from re-introducing multi-megabyte product documents.
@@ -164,6 +188,8 @@ const productService = {
 
     const product = await Product.create(productData);
     logger.info('Product created:', { id: product._id.toString(), sellerId, name: product.name });
+    // Keeps activeProductCount and the directory ranking score current.
+    void syncSellerRanking(sellerId);
     return product.toJSON();
   },
 
@@ -231,6 +257,8 @@ const productService = {
     logger.info('Product updated:', { id, sellerId });
     destroyAssets(orphanedImageIds, { id, sellerId });
 
+    // isActive may have flipped, which changes the seller's product count.
+    void syncSellerRanking(sellerId);
     return product.toJSON();
   },
 
@@ -257,6 +285,7 @@ const productService = {
     destroyAssets(result.imagePublicIds, { id, sellerId });
 
     logger.info('Product deleted:', { id, sellerId });
+    void syncSellerRanking(sellerId);
     return { success: true, message: 'Product deleted successfully' };
   },
 

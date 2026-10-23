@@ -30,6 +30,7 @@ const routes = require('./routes/index');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { connectDB, disconnectDB } = require('./config/db');
 const logger = require('./utils/logger');
+const rankingScheduler = require('./services/ranking/rankingScheduler');
 
 const app = express();
 
@@ -82,6 +83,11 @@ if (require.main === module) {
         logger.info(`Chatstand Server running in ${process.env.NODE_ENV || 'development'} mode on http://${HOST}:${PORT}`);
         logger.info(`Health check live at http://${HOST}:${PORT}/health`);
       });
+
+      // Hourly seller-ranking recompute. Guarded by a MongoDB lease lock, so
+      // running several API instances does not run the job several times.
+      // Set RANKING_JOB_ENABLED=false to hand it to an external cron instead.
+      rankingScheduler.start();
     })
     .catch((err) => {
       logger.error('FATAL: could not connect to MongoDB. Server not started.', { error: err.message });

@@ -6,6 +6,7 @@
 const express = require('express');
 const router = express.Router();
 const adminController = require('../controllers/adminController');
+const reviewController = require('../controllers/reviewController');
 const broadcastRoutes = require('./broadcastRoutes');
 const { protect, authorizeRoles, requireVerifiedEmail } = require('../middleware/authMiddleware');
 
@@ -41,5 +42,13 @@ router.patch('/payouts/:id/process', adminController.processPayout);
 router.get('/telegram', adminController.getTelegramStats);
 router.get('/fee', adminController.getFeeConfig);
 router.patch('/fee', adminController.updateFeeConfig);
+
+// Seller directory curation & ranking
+router.patch('/sellers/:id/sponsored', adminController.setSellerSponsored);
+router.patch('/products/:id/promoted', adminController.setProductPromoted);
+router.post('/ranking/recompute', adminController.recomputeRanking);
+
+// Review moderation
+router.patch('/reviews/:id/status', reviewController.setStatus);
 
 module.exports = router;

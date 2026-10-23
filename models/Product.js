@@ -98,6 +98,12 @@ const productSchema = new mongoose.Schema(
       default: [],
       select: false,
     },
+    // --- Promoted products strip (Phase 1) ----------------------------
+    // Drives the small "Promoted Products" strip on /stores.
+    isPromoted: { type: Boolean, default: false, index: true },
+    promotedUntil: { type: Date, default: null },
+    // Per-product score used only to order the promoted strip.
+    rankingScore: { type: Number, default: 0 },
   },
   {
     timestamps: true,

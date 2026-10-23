@@ -4,6 +4,7 @@
  */
 
 const paymentService = require('../services/payments/paymentService');
+const groupPaymentService = require('../services/payments/groupPaymentService');
 const logger = require('../utils/logger');
 // Order model is pre-registered by orderService (required via paymentService dependency chain).
 // These refs are used in paymentCallback to detect Telegram source for redirect routing.
@@ -43,6 +44,12 @@ async function initializePayment(req, res, next) {
 async function verifyPayment(req, res, next) {
   try {
     const { reference } = req.params;
+    // Group charges carry a GRP_ prefix, so the right settlement path is
+    // chosen from the reference itself with no extra lookup.
+    if (groupPaymentService.isGroupReference(reference)) {
+      const group = await groupPaymentService.verify(reference);
+      return res.status(200).json(group);
+    }
     const transaction = await paymentService.verify(reference);
     res.status(200).json(transaction);
   } catch (error) {
@@ -68,7 +75,8 @@ async function paymentCallback(req, res) {
   // Determine redirect path by order source before verifying.
   // Default to storefront path; switch to /checkout/done for Telegram.
   let returnPath = '/checkout';
-  if (reference) {
+  const isGroup = groupPaymentService.isGroupReference(reference);
+  if (reference && !isGroup) {
     try {
       const payment = await getPaymentModel().findOne({ reference }).select('orderId').lean();
       if (payment) {
@@ -87,6 +95,13 @@ async function paymentCallback(req, res) {
 
   try {
     if (!reference) throw new Error('Payment reference is missing');
+    if (isGroup) {
+      // A multi-store basket has no single refund status to report; the
+      // fan-out either completed or the webhook will retry it.
+      await groupPaymentService.verify(reference);
+      target.searchParams.set('payment', 'success');
+      return res.redirect(303, target.toString());
+    }
     const transaction = await paymentService.verify(reference);
     if (transaction.refundStatus === 'processed') target.searchParams.set('payment', 'refunded');
     else if (transaction.refundStatus === 'pending') target.searchParams.set('payment', 'refund_pending');

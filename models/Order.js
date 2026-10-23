@@ -32,8 +32,11 @@ const orderItemSchema = new mongoose.Schema(
  * the authority on price and payment. That distinction drives the guards in
  * manualOrderService and the payment-verification service.
  */
-const ORDER_SOURCES = ['storefront', 'telegram', 'manual'];
-const AUTOMATIC_SOURCES = ['storefront', 'telegram'];
+// 'website_chatbot' is the per-store chat widget on /store/:identifier. It is
+// a distinct source from 'storefront' because those orders bypass the cart
+// entirely and are always single-seller, which the seller needs to see.
+const ORDER_SOURCES = ['storefront', 'telegram', 'manual', 'website_chatbot'];
+const AUTOMATIC_SOURCES = ['storefront', 'telegram', 'website_chatbot'];
 
 /** Where a manually logged order was actually taken. Display/reporting only. */
 const MANUAL_CHANNELS = [
@@ -235,6 +238,13 @@ const orderSchema = new mongoose.Schema(
       index: true,
       sparse: true,
     },
+    // --- Multi-seller checkout (Phase 5) --------------------------------
+    // Set when this order is one slice of a basket the buyer paid for in a
+    // single transaction. Null for every single-seller and Telegram order,
+    // which keeps the existing flow completely unchanged.
+    parentOrderId: { type: String, default: null, index: true },
+    // Quotable sub-order reference within the group: ORD-1042-A.
+    groupLabel: { type: String, default: '', trim: true },
   },
   {
     timestamps: true,

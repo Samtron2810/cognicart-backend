@@ -21,7 +21,10 @@ const businessSchema = new mongoose.Schema(
       type: String,
       trim: true,
       lowercase: true,
-      index: true,
+      // Unique so two stores can never claim the same /store/<slug> URL.
+      // Sparse so businesses created before slugs existed are still valid.
+      unique: true,
+      sparse: true,
     },
     description: {
       type: String,
@@ -134,6 +137,20 @@ const businessSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // --- Seller directory & ranking (Phase 1) -------------------------
+    // Hide a store from /stores without deactivating the account.
+    isListed: { type: Boolean, default: true, index: true },
+    // Paid placement. Checked against sponsoredUntil before it counts.
+    isSponsored: { type: Boolean, default: false },
+    sponsoredUntil: { type: Date, default: null },
+    // Denormalised so the directory never counts products per card.
+    activeProductCount: { type: Number, default: 0, min: 0 },
+    // Written by the reviews service; read by the ranking engine.
+    ratingAvg: { type: Number, default: 0, min: 0, max: 5 },
+    ratingCount: { type: Number, default: 0, min: 0 },
+    // Cached ranking score, recomputed hourly by the ranking job.
+    rankingScore: { type: Number, default: 0, index: true },
+    rankingUpdatedAt: { type: Date, default: null },
   },
   {
     timestamps: true,

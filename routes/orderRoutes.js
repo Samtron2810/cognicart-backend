@@ -5,12 +5,20 @@
 const express = require('express');
 const router = express.Router();
 const orderController = require('../controllers/orderController');
+const orderGroupController = require('../controllers/orderGroupController');
 const { protect, optionalAuth, requireVerifiedEmail } = require('../middleware/authMiddleware');
 const { optionalShopper } = require('../middleware/shopperMiddleware');
 const { authLimiter } = require('../middleware/rateLimiter');
 
 // Order checkout can be performed by authenticated seller or customer checkout (optionalAuth)
 router.post('/', optionalAuth, optionalShopper, orderController.createOrder);
+
+// Multi-store checkout. Declared before '/:id' so "group" is not swallowed
+// as an order id. The single-seller route above is untouched: a one-store
+// cart still goes through it, and so does every Telegram order.
+router.post('/group', optionalShopper, orderGroupController.create);
+router.post('/group/:id/pay', optionalShopper, orderGroupController.initializePayment);
+router.get('/group/:id', optionalShopper, orderGroupController.getForBuyer);
 
 // Guest buyer order cancel: verifies ownership by matching email+orderNumber before cancelling.
 // No auth token required — works for buyers who never verified their email.

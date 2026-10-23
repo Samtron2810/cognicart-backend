@@ -10,6 +10,15 @@ const path = require('path');
 const root = path.join(__dirname, '..');
 const envPath = path.join(root, '.env.example');
 const expected = [
+  // Documented in .env.example with working defaults.
+  'OPENAI_MODEL',
+  'PLATFORM_FEE_PERCENTAGE',
+  'PLATFORM_FEE_FIXED',
+  // Ranking job. Documented in .env.example with their defaults so an
+  // operator can see what the job does and how to move it to external cron.
+  'RANKING_JOB_ENABLED',
+  'RANKING_JOB_INTERVAL_MS',
+  'RANKING_JOB_INITIAL_DELAY_MS',
   'NODE_ENV',
   'PORT',
   'CLIENT_URL',

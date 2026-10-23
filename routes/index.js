@@ -22,6 +22,9 @@ const analyticsRoutes = require('./analyticsRoutes');
 const payoutRoutes = require('./payoutRoutes');
 const campaignRoutes = require('./campaignRoutes');
 const storefrontRoutes = require('./storefrontRoutes');
+const storeDirectoryRoutes = require('./storeDirectoryRoutes');
+const reviewRoutes = require('./reviewRoutes');
+const searchRoutes = require('./searchRoutes');
 const shopRoutes = require('./shopRoutes');
 const telegramRoutes = require('./telegramRoutes');
 const uploadRoutes = require('./uploadRoutes');
@@ -60,6 +63,10 @@ router.use('/api/campaigns', campaignRoutes);
 router.use('/api/shop', shopRoutes);
 router.use('/api/storefront', storefrontRoutes);
 router.use('/api/store', storefrontRoutes);
+// Seller-first marketplace directory, buyer reviews, and global search.
+router.use('/api/stores', storeDirectoryRoutes);
+router.use('/api/reviews', reviewRoutes);
+router.use('/api/search', searchRoutes);
 router.use('/api/admin', platformRoutes);
 router.use('/api/platform', platformRoutes);
 

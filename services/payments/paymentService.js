@@ -419,7 +419,16 @@ const paymentService = {
   async processWebhook(event = {}) {
     const type = String(event.event || '');
     const data = event.data || {};
-    if (type === 'charge.success' && data.reference) return this.verify(data.reference);
+    if (type === 'charge.success' && data.reference) {
+      // Multi-store baskets settle through their own path. Required lazily:
+      // groupPaymentService depends on this module.
+      // eslint-disable-next-line global-require
+      const groupPaymentService = require('./groupPaymentService');
+      if (groupPaymentService.isGroupReference(data.reference)) {
+        return groupPaymentService.verify(data.reference);
+      }
+      return this.verify(data.reference);
+    }
 
     if (['refund.processed', 'refund.failed'].includes(type)) {
       const reference =
