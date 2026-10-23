@@ -24,13 +24,14 @@ const Order = require('../../models/Order');
 const { generateShopperToken } = require('../../utils/generateToken');
 const { normalizePhone, isNigerianPhone, isEmail, sanitize } = require('../../utils/validators');
 const logger = require('../../utils/logger');
+const { getJwtSecret } = require('../../config/env');
 
 const OTP_TTL_MS = 10 * 60 * 1000; // code is valid for 10 minutes
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // one code per phone per minute
 const OTP_MAX_ATTEMPTS = 5;
 const MAGIC_TTL_MS = 7 * 24 * 60 * 60 * 1000; // tracking links live for a week
 
-const SECRET = process.env.JWT_SECRET || 'chatstand_jwt_super_secret_dev_key_2026';
+const SECRET = getJwtSecret();
 
 function getNotificationService() {
   // Lazy to avoid the order-confirmation -> magic-link cycle at module load.

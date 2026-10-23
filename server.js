@@ -4,6 +4,19 @@
  */
 
 require('dotenv').config();
+
+// Validate secrets before anything else loads. Doing it here means a missing
+// JWT_SECRET prints one actionable message instead of surfacing as a require
+// stack trace, or worse, as "secretOrPrivateKey must have a value" at the
+// first login attempt.
+const { assertRequiredEnv, exitOnInvalidEnv } = require('./config/env');
+
+try {
+  assertRequiredEnv();
+} catch (err) {
+  exitOnInvalidEnv(err);
+}
+
 const http = require('http');
 const express = require('express');
 const cors = require('cors');

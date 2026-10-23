@@ -12,6 +12,7 @@ const SellerAuthToken = require('../../models/SellerAuthToken');
 const { generateToken } = require('../../utils/generateToken');
 const { isEmail, isStrongPassword, isNigerianPhone, normalizePhone, sanitize } = require('../../utils/validators');
 const logger = require('../../utils/logger');
+const { getJwtSecret } = require('../../config/env');
 
 const VALID_ROLES = ['seller', 'admin', 'platform_owner'];
 
@@ -21,7 +22,7 @@ const VERIFY_MAX_ATTEMPTS = 5; // wrong-code budget before the code is burned
 const RESET_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const RESET_RESEND_COOLDOWN_MS = 60 * 1000;
 
-const SECRET = process.env.JWT_SECRET || 'chatstand_jwt_super_secret_dev_key_2026';
+const SECRET = getJwtSecret();
 
 function hashSecret(value) {
   return crypto.createHmac('sha256', SECRET).update(String(value)).digest('hex');

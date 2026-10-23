@@ -30,6 +30,16 @@
 
 require('dotenv').config();
 
+// This CLI loads the auth stack, which requires JWT_SECRET. Validate up front
+// so a misconfigured .env prints instructions instead of a require() trace.
+const { assertRequiredEnv, exitOnInvalidEnv } = require('../config/env');
+
+try {
+  assertRequiredEnv();
+} catch (err) {
+  exitOnInvalidEnv(err);
+}
+
 const { connectDB, disconnectDB } = require('../config/db');
 const authService = require('../services/auth/authService');
 const { isStrongPassword } = require('../utils/validators');

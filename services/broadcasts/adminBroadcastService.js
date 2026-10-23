@@ -20,8 +20,9 @@ const Product = require('../../models/Product');
 const Order = require('../../models/Order');
 const { isEmail, sanitize } = require('../../utils/validators');
 const logger = require('../../utils/logger');
+const { getJwtSecret } = require('../../config/env');
 
-const SECRET = process.env.JWT_SECRET || 'chatstand_jwt_super_secret_dev_key_2026';
+const SECRET = getJwtSecret();
 
 /** Blast-radius cap: one mistake should not reach the whole platform twice over. */
 const MAX_RECIPIENTS = Number(process.env.BROADCAST_MAX_RECIPIENTS || 2000);

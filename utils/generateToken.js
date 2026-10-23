@@ -9,8 +9,10 @@
  */
 
 const jwt = require('jsonwebtoken');
+const { getJwtSecret } = require('../config/env');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'chatstand_jwt_super_secret_dev_key_2026';
+// No fallback: config/env throws on boot if JWT_SECRET is missing or compromised.
+const JWT_SECRET = getJwtSecret();
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const SHOPPER_JWT_EXPIRES_IN = process.env.SHOPPER_JWT_EXPIRES_IN || '30d';
 
