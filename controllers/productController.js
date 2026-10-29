@@ -13,7 +13,17 @@ const productService = require('../services/products/productService');
 async function getProducts(req, res, next) {
   try {
     const isPublic = req.query.public === 'true' || !req.sellerId;
-    const sellerId = req.query.sellerId || req.sellerId;
+
+    // A request that explicitly asks for the public catalog must never be
+    // narrowed to the signed-in seller's own products. optionalAuth sets
+    // req.sellerId for any logged-in seller, so falling back to it here made
+    // /marketplace show a seller only their own shop — and nothing at all
+    // when their shop was empty. Only an explicit ?sellerId= narrows a
+    // public listing.
+    const sellerId = req.query.public === 'true'
+      ? req.query.sellerId || undefined
+      : req.query.sellerId || req.sellerId;
+
     const { search, category, isActive } = req.query;
 
     const products = await productService.list({

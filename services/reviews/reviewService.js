@@ -81,8 +81,12 @@ const reviewService = {
 
     if (!delivered.length) return { canReview: false, eligibleOrders: [] };
 
+    // Only STORE reviews consume a store-review slot. Without the productId
+    // filter, rating one item would silently use up the buyer's right to
+    // review the shop for that order.
     const used = await Review.find({
       shopperId,
+      productId: null,
       orderId: { $in: delivered.map((order) => String(order._id)) },
     })
       .select('orderId')
@@ -103,13 +107,75 @@ const reviewService = {
   },
 
   /**
+   * Can this buyer review this PRODUCT, and against which orders?
+   *
+   * The rule the UI advertises: you may review a product you actually bought
+   * and received. So we look for delivered orders belonging to this buyer
+   * that contain this product, minus the ones already used to review it.
+   *
+   * Returns the same shape as getEligibility so the form can be reused, plus
+   * `hasPurchased` to let the page tell "never bought it" apart from
+   * "bought it and already reviewed it" — two very different messages.
+   */
+  async getProductEligibility(shopperId, productId) {
+    const empty = { canReview: false, eligibleOrders: [], hasPurchased: false, hasReviewed: false };
+    if (!shopperId || !productId) return empty;
+
+    const wanted = String(productId);
+
+    // items.productId is a plain string on the order, so this matches without
+    // caring whether the caller passed an ObjectId or its string form.
+    const delivered = await Order.find({
+      shopperId,
+      orderStatus: 'Delivered',
+      'items.productId': wanted,
+    })
+      .select('_id orderNumber createdAt items sellerId')
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean();
+
+    if (!delivered.length) return empty;
+
+    const used = await Review.find({
+      shopperId,
+      productId: wanted,
+      orderId: { $in: delivered.map((order) => String(order._id)) },
+    })
+      .select('orderId')
+      .lean();
+
+    const usedIds = new Set(used.map((review) => String(review.orderId)));
+
+    const eligibleOrders = delivered
+      .filter((order) => !usedIds.has(String(order._id)))
+      .map((order) => {
+        const line = (order.items || []).find((item) => String(item.productId || '') === wanted);
+        return {
+          orderId: String(order._id),
+          sellerId: String(order.sellerId),
+          reference: order.orderNumber ? `#${String(order.orderNumber).padStart(5, '0')}` : '',
+          createdAt: order.createdAt,
+          itemSummary: (line && line.name) || '',
+        };
+      });
+
+    return {
+      canReview: eligibleOrders.length > 0,
+      eligibleOrders,
+      hasPurchased: true,
+      hasReviewed: usedIds.size > 0,
+    };
+  },
+
+  /**
    * Create a review.
    *
    * Every gate is re-checked here against the database. The frontend asking
    * nicely is not a security control: the order must exist, belong to this
    * buyer, belong to this seller, and be delivered.
    */
-  async create(shopperId, { sellerId, orderId, rating, comment } = {}) {
+  async create(shopperId, { sellerId, orderId, productId, rating, comment } = {}) {
     if (!shopperId) throw badRequest('A verified buyer session is required to leave a review');
     if (!sellerId) throw badRequest('Seller is required');
     if (!orderId) throw badRequest('Order is required');
@@ -138,6 +204,23 @@ const reviewService = {
       throw badRequest('You can review a store once your order has been delivered');
     }
 
+    // Reviewing one product rather than the store. The order must actually
+    // contain it — this is the check that makes "only buyers may review"
+    // true at the product level, and it is deliberately done here against
+    // the stored order rather than trusting anything the client sent.
+    let productKey = null;
+    let productName = '';
+    if (productId) {
+      const line = (order.items || []).find(
+        (item) => String(item.productId || '') === String(productId)
+      );
+      if (!line) {
+        throw badRequest('You can only review a product you bought in this order');
+      }
+      productKey = String(productId);
+      productName = line.name || '';
+    }
+
     const business = await Business.findOne({ sellerId }).select('sellerId').lean();
     if (!business) throw notFound('Store not found');
 
@@ -148,6 +231,8 @@ const reviewService = {
         sellerId,
         shopperId,
         orderId: String(orderId),
+        productId: productKey,
+        productName,
         buyerName: (shopper && shopper.name) || order.customerName || 'Verified buyer',
         rating: numericRating,
         comment: sanitize(comment || '', 1000),
@@ -162,7 +247,11 @@ const reviewService = {
     } catch (error) {
       // The unique index is the real guard against double-reviewing.
       if (error && error.code === 11000) {
-        throw badRequest('You have already reviewed this order');
+        throw badRequest(
+          productKey
+            ? 'You have already reviewed this product for this order'
+            : 'You have already reviewed this order'
+        );
       }
       throw error;
     }
@@ -173,10 +262,30 @@ const reviewService = {
    * store page shows next to the average.
    */
   async listForSeller(sellerId, { page = 1, limit = DEFAULT_LIMIT } = {}) {
+    // Store pages list everything written about the seller, product reviews
+    // included, so the average, the count and the visible list agree.
+    return this.listPublished({ sellerId, status: 'published' }, { page, limit });
+  },
+
+  /**
+   * Published reviews for a single product, with the same summary shape the
+   * store page uses so the UI can share one component.
+   */
+  async listForProduct(productId, { page = 1, limit = DEFAULT_LIMIT } = {}) {
+    if (!productId) {
+      return {
+        reviews: [],
+        summary: { average: null, total: 0, distribution: { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 } },
+        pagination: { total: 0, page: 1, limit: DEFAULT_LIMIT, totalPages: 1, hasMore: false },
+      };
+    }
+    return this.listPublished({ productId: String(productId), status: 'published' }, { page, limit });
+  },
+
+  /** Shared pagination + rating breakdown for any published-review filter. */
+  async listPublished(filter, { page = 1, limit = DEFAULT_LIMIT } = {}) {
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.max(1, Math.min(MAX_LIMIT, parseInt(limit, 10) || DEFAULT_LIMIT));
-
-    const filter = { sellerId, status: 'published' };
 
     const [rows, total, breakdown] = await Promise.all([
       Review.find(filter).sort({ createdAt: -1 }).skip((pageNum - 1) * limitNum).limit(limitNum).lean(),

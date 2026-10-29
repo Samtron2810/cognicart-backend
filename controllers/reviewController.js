@@ -24,13 +24,32 @@ const reviewController = {
   },
 
   /**
-   * @route   GET /api/reviews/eligibility?sellerId=
+   * @route   GET /api/products/:productId/reviews
+   * @desc    Published reviews for one product, with the score breakdown
+   * @access  Public
+   */
+  async listForProduct(req, res, next) {
+    try {
+      const result = await reviewService.listForProduct(req.params.productId || req.params.id, req.query);
+      res.status(200).json(result);
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  /**
+   * @route   GET /api/reviews/eligibility?sellerId=  |  ?productId=
    * @desc    Which of this buyer's delivered orders can still be reviewed
    * @access  Private (verified buyer)
+   *
+   * productId wins when both are sent: a product question deserves the
+   * product answer, which also reports whether they bought it at all.
    */
   async getEligibility(req, res, next) {
     try {
-      const result = await reviewService.getEligibility(req.shopperId, req.query.sellerId);
+      const result = req.query.productId
+        ? await reviewService.getProductEligibility(req.shopperId, req.query.productId)
+        : await reviewService.getEligibility(req.shopperId, req.query.sellerId);
       res.status(200).json(result);
     } catch (error) {
       next(error);

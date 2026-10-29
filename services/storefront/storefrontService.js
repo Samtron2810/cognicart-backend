@@ -102,6 +102,15 @@ const storefrontService = {
     const store = await this.resolveStore(sellerId);
     let products = await productService.list({ sellerId: store.sellerId, isPublic: true });
 
+    // Every category this store actually sells, taken before any filter is
+    // applied and before pagination. The storefront renders its filter from
+    // this, so the chips stay complete no matter which page or category is
+    // being viewed — deriving them from the visible page would make options
+    // disappear as soon as one was chosen.
+    const categories = [...new Set(products.map((p) => p.category).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b)
+    );
+
     // Category filter
     if (category) {
       const catLower = category.toLowerCase();
@@ -166,6 +175,7 @@ const storefrontService = {
         slug: store.slug,
       },
       products: paginated,
+      categories,
       pagination: {
         total,
         page: pageNum,

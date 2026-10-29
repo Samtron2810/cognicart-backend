@@ -5,6 +5,7 @@
 const express = require('express');
 const router = express.Router();
 const productController = require('../controllers/productController');
+const reviewController = require('../controllers/reviewController');
 const { protect, optionalAuth, requireVerifiedEmail } = require('../middleware/authMiddleware');
 
 // Public / Seller Catalog listing
@@ -16,6 +17,10 @@ router.get('/', optionalAuth, productController.getProducts);
 // Product CRUD
 router.post('/', protect, requireVerifiedEmail, productController.createProduct);
 router.get('/:id', optionalAuth, productController.getProductById);
+
+// Buyer reviews of this product. Public: anyone may read them, only a buyer
+// with a delivered order containing this product may write one (POST /reviews).
+router.get('/:id/reviews', reviewController.listForProduct);
 router.patch('/:id', protect, requireVerifiedEmail, productController.updateProduct);
 router.delete('/:id', protect, requireVerifiedEmail, productController.deleteProduct);
 

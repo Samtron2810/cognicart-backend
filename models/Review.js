@@ -37,6 +37,27 @@ const reviewSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Order ID is required'],
     },
+    // null  -> a review of the STORE (the original behaviour).
+    // set   -> a review of one PRODUCT inside the delivered order.
+    //
+    // Both kinds live in this collection on purpose. They are the same claim
+    // backed by the same proof ("this buyer paid for this and it arrived"),
+    // so they share one eligibility path, one moderation queue, and one
+    // average. Splitting them into a second collection would mean a store
+    // page showing "4.6 from 12 reviews" while only listing five of them.
+    productId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    // Snapshot, for the same reason buyerName is one: renaming or deleting a
+    // product must not rewrite the history of what was reviewed.
+    productName: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 200,
+    },
     // Snapshot: a later profile edit must not rewrite the name on an old review.
     buyerName: {
       type: String,
@@ -98,8 +119,18 @@ const reviewSchema = new mongoose.Schema(
 
 // Public store page: published reviews, newest first.
 reviewSchema.index({ sellerId: 1, status: 1, createdAt: -1 });
-// One review per buyer per order. This is the anti-gaming guarantee.
-reviewSchema.index({ shopperId: 1, orderId: 1 }, { unique: true });
+// Public product page: published reviews for one product, newest first.
+reviewSchema.index({ productId: 1, status: 1, createdAt: -1 });
+// The anti-gaming guarantee, now per product.
+//
+// productId is null for a store review, and null is a real value to a unique
+// index, so this still allows exactly ONE store review per order while also
+// allowing one review per product in that order. A two-item order can
+// therefore produce at most three reviews: the store, and each item once.
+//
+// NOTE: this replaces the old { shopperId, orderId } unique index. Run
+// `npm run sync-indexes` on deploy so the superseded index is dropped.
+reviewSchema.index({ shopperId: 1, orderId: 1, productId: 1 }, { unique: true });
 
 const Review = mongoose.model('Review', reviewSchema);
 
